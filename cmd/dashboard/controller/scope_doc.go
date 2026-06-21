@@ -1,57 +1,37 @@
-// Package controller — scope reference table for REST + MCP.
+// Package controller — scope reference table for REST.
 //
-// Each REST endpoint under /api/v1/* and each MCP tool under /mcp requires a
-// specific scope when authenticated via PAT (`Authorization: Bearer nzp_*`).
+// Each REST endpoint under /api/v1/* requires a specific scope when
+// authenticated via PAT (`Authorization: Bearer nzp_*`).
 // JWT-authenticated requests skip scope enforcement.
 //
 // This file is the authoritative human + LLM-readable index. The actual
-// enforcement lives in controller.go (REST) and mcp_tools_*.go (MCP). When
-// you change an endpoint's scope requirement, update this table.
+// enforcement lives in controller.go (REST). When you change an endpoint's
+// scope requirement, update this table.
 //
 // # Scope naming
 //
 //	nezha:{resource}:{verb}
-//	  resource: inventory | server | service | alertrule | cron | ddns | nat |
-//	            notification | notification-group | transfer | admin
+//	  resource: inventory | server | service | alertrule |
+//	            notification | notification-group | admin
 //	  verb:     read | write | delete | exec
 //
 //	inventory vs server：inventory 管“能看到/能删哪些机器”（列出 server /
-//	server-group、删除 server / server-group、MCP server.list）；server 管对
-//	已知机器的运行态操作（exec / 文件读写 / 编辑配置 / metrics / server.get）。
+//	server-group、删除 server / server-group）；server 管对已知机器的运行态
+//	操作（exec / 编辑配置 / metrics）。
 //
 //	nezha:*               Admin-only superuser
 //	nezha:admin:*         Admin-only user/waf/setting/online-user management
 //	nezha:<res>:*         All actions on a resource
 //
-// # MCP tools (POST /mcp tools/call)
-//
-//	meta.whoami           — (any scope)
-//	server.list           nezha:inventory:read
-//	server.get            nezha:server:read
-//	server.exec           nezha:server:exec
-//	fs.list               nezha:server:read
-//	fs.read               nezha:server:read
-//	fs.write              nezha:server:write
-//	fs.delete             nezha:server:delete
-//	fs.download_url       nezha:server:read
-//	fs.upload_url         nezha:server:write
-//
 // # REST endpoints (PAT required scope)
 //
 //	GET    /api/v1/server                            nezha:inventory:read
 //	PATCH  /api/v1/server/{id}                       nezha:server:write
-//	GET    /api/v1/server/config/{id}                nezha:server:write
-//	POST   /api/v1/server/config                     nezha:server:write
 //	POST   /api/v1/batch-delete/server               nezha:inventory:delete
-//	POST   /api/v1/batch-move/server                 nezha:server:write
 //	POST   /api/v1/force-update/server               nezha:server:write
 //	POST   /api/v1/server-group                      nezha:server:write
 //	PATCH  /api/v1/server-group/{id}                 nezha:server:write
 //	POST   /api/v1/batch-delete/server-group         nezha:inventory:delete
-//	POST   /api/v1/terminal                          nezha:server:exec
-//	GET    /api/v1/ws/terminal/{id}                  nezha:server:exec
-//	POST   /api/v1/file                              nezha:server:read+write+delete
-//	GET    /api/v1/ws/file/{id}                      nezha:server:read+write+delete
 //	GET    /api/v1/ws/server                         nezha:inventory:read
 //	GET    /api/v1/server-group                      nezha:inventory:read
 //	GET    /api/v1/service                           nezha:service:read
@@ -59,11 +39,6 @@
 //	GET    /api/v1/service/{id}/history              nezha:service:read
 //	GET    /api/v1/server/{id}/service               nezha:service:read
 //	GET    /api/v1/server/{id}/metrics               nezha:server:read
-//
-//	GET    /api/v1/transfer                          nezha:transfer:read
-//	POST   /api/v1/transfer/{id}/cancel              nezha:transfer:write
-//	POST   /api/v1/transfer/{id}/retry               nezha:transfer:write
-//	GET    /api/v1/ws/transfer                       nezha:transfer:read
 //
 //	GET    /api/v1/service/list                      nezha:service:read
 //	POST   /api/v1/service                           nezha:service:write
@@ -74,23 +49,6 @@
 //	POST   /api/v1/alert-rule                        nezha:alertrule:write
 //	PATCH  /api/v1/alert-rule/{id}                   nezha:alertrule:write
 //	POST   /api/v1/batch-delete/alert-rule           nezha:alertrule:delete
-//
-//	GET    /api/v1/cron                              nezha:cron:read
-//	POST   /api/v1/cron                              nezha:cron:write
-//	PATCH  /api/v1/cron/{id}                         nezha:cron:write
-//	POST   /api/v1/cron/{id}/manual                  nezha:cron:exec
-//	POST   /api/v1/batch-delete/cron                 nezha:cron:delete
-//
-//	GET    /api/v1/ddns                              nezha:ddns:read
-//	GET    /api/v1/ddns/providers                    nezha:ddns:read
-//	POST   /api/v1/ddns                              nezha:ddns:write
-//	PATCH  /api/v1/ddns/{id}                         nezha:ddns:write
-//	POST   /api/v1/batch-delete/ddns                 nezha:ddns:delete
-//
-//	GET    /api/v1/nat                               nezha:nat:read
-//	POST   /api/v1/nat                               nezha:nat:write
-//	PATCH  /api/v1/nat/{id}                          nezha:nat:write
-//	POST   /api/v1/batch-delete/nat                  nezha:nat:delete
 //
 //	GET    /api/v1/notification                      nezha:notification:read
 //	POST   /api/v1/notification                      nezha:notification:write

@@ -28,12 +28,11 @@ func setupAlertRuleFanoutFixture(t *testing.T) {
 	originalLoc := singleton.Loc
 	originalLocalizer := singleton.Localizer
 	originalServer := singleton.ServerShared
-	originalCron := singleton.CronShared
 	originalUserInfo := singleton.UserInfoMap
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.Server{}, &model.AlertRule{}, &model.Cron{}, &model.User{}))
+	require.NoError(t, db.AutoMigrate(&model.Server{}, &model.AlertRule{}, &model.User{}))
 
 	singleton.DB = db
 	singleton.Loc = time.UTC
@@ -47,7 +46,6 @@ func setupAlertRuleFanoutFixture(t *testing.T) {
 	require.NoError(t, db.Create(&model.Server{Common: model.Common{ID: 2, UserID: 1}, Name: "s2", UUID: "s2"}).Error)
 
 	singleton.ServerShared = singleton.NewServerClass()
-	singleton.CronShared = singleton.NewCronClass()
 
 	t.Cleanup(func() {
 		singleton.DB = originalDB
@@ -55,7 +53,6 @@ func setupAlertRuleFanoutFixture(t *testing.T) {
 		singleton.Loc = originalLoc
 		singleton.Localizer = originalLocalizer
 		singleton.ServerShared = originalServer
-		singleton.CronShared = originalCron
 		singleton.UserLock.Lock()
 		singleton.UserInfoMap = originalUserInfo
 		singleton.UserLock.Unlock()

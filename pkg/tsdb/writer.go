@@ -97,9 +97,7 @@ const (
 	MetricServerTCPConn        MetricType = "nezha_server_tcp_conn"
 	MetricServerUDPConn        MetricType = "nezha_server_udp_conn"
 	MetricServerProcessCount   MetricType = "nezha_server_process_count"
-	MetricServerTemperature    MetricType = "nezha_server_temperature"
 	MetricServerUptime         MetricType = "nezha_server_uptime"
-	MetricServerGPU            MetricType = "nezha_server_gpu"
 
 	// 服务监控指标
 	MetricServiceDelay  MetricType = "nezha_service_delay"
@@ -124,9 +122,7 @@ type ServerMetrics struct {
 	TCPConnCount   uint64
 	UDPConnCount   uint64
 	ProcessCount   uint64
-	Temperature    float64
 	Uptime         uint64
-	GPU            float64
 }
 
 // ServiceMetrics 服务监控指标数据
@@ -163,9 +159,7 @@ func (db *TSDB) WriteServerMetrics(m *ServerMetrics) error {
 		makeServerMetricRow(MetricServerTCPConn, serverIDStr, ts, float64(m.TCPConnCount)),
 		makeServerMetricRow(MetricServerUDPConn, serverIDStr, ts, float64(m.UDPConnCount)),
 		makeServerMetricRow(MetricServerProcessCount, serverIDStr, ts, float64(m.ProcessCount)),
-		makeServerMetricRow(MetricServerTemperature, serverIDStr, ts, m.Temperature),
 		makeServerMetricRow(MetricServerUptime, serverIDStr, ts, float64(m.Uptime)),
-		makeServerMetricRow(MetricServerGPU, serverIDStr, ts, m.GPU),
 	}
 
 	if db.writer != nil {
@@ -237,7 +231,7 @@ func (db *TSDB) WriteBatchServerMetrics(metrics []*ServerMetrics) error {
 		return fmt.Errorf("TSDB is closed")
 	}
 
-	rows := make([]storage.MetricRow, 0, len(metrics)*17)
+	rows := make([]storage.MetricRow, 0, len(metrics)*15)
 	for _, m := range metrics {
 		ts := m.Timestamp.UnixMilli()
 		serverIDStr := strconv.FormatUint(m.ServerID, 10)
@@ -256,9 +250,7 @@ func (db *TSDB) WriteBatchServerMetrics(metrics []*ServerMetrics) error {
 			makeServerMetricRow(MetricServerTCPConn, serverIDStr, ts, float64(m.TCPConnCount)),
 			makeServerMetricRow(MetricServerUDPConn, serverIDStr, ts, float64(m.UDPConnCount)),
 			makeServerMetricRow(MetricServerProcessCount, serverIDStr, ts, float64(m.ProcessCount)),
-			makeServerMetricRow(MetricServerTemperature, serverIDStr, ts, m.Temperature),
 			makeServerMetricRow(MetricServerUptime, serverIDStr, ts, float64(m.Uptime)),
-			makeServerMetricRow(MetricServerGPU, serverIDStr, ts, m.GPU),
 		)
 	}
 

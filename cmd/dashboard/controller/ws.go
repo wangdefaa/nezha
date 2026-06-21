@@ -173,7 +173,7 @@ var requestGroup singleflight.Group
 // The cache key must include the viewer's identity because the projection
 // depends on per-server ownership: prior to GHSA-hvv7-hfrh-7gxj this function
 // used a single isMember flag and leaked HideForGuest servers plus full Host
-// (PlatformVersion, agent Version, GPU) to every authenticated user.
+// (PlatformVersion, agent Version) to every authenticated user.
 //
 // patCacheKey distinguishes PATs with disjoint server_ids whitelists so two
 // limited tokens for the same user do not share a singleflight projection.

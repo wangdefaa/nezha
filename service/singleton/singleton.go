@@ -2,6 +2,7 @@ package singleton
 
 import (
 	_ "embed"
+	"fmt"
 	"iter"
 	"log"
 	"maps"
@@ -10,8 +11,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/patrickmn/go-cache"
-	"gorm.io/driver/sqlite"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"sigs.k8s.io/yaml"
 
@@ -30,14 +33,8 @@ var (
 
 	ServerShared          *ServerClass
 	ServiceSentinelShared *ServiceSentinel
-	DDNSShared            *DDNSClass
 	NotificationShared    *NotificationClass
-	NATShared             *NATClass
 	CronShared            *CronClass
-	// ServerTransferShared is initialized in LoadSingleton AFTER ServerShared
-	// (so the in-memory pending index can write back into ServerShared.UserID
-	// on transitions) and AFTER initUser (so PushIfOnline can read secrets
-	// from UserInfoMap).
 )
 
 //go:embed frontend-templates.yaml
@@ -58,12 +55,9 @@ func InitTimezoneAndCache() error {
 func LoadSingleton(bus chan<- *model.Service) (err error) {
 	initI18n() // 加载本地化服务
 	initUser() // 加载用户ID绑定表
-	NATShared = NewNATClass()
-	DDNSShared = NewDDNSClass()
 	NotificationShared = NewNotificationClass()
 	ServerShared = NewServerClass()
 	CronShared = NewCronClass()
-	ServerTransferShared = NewServerTransferClass()
 	// 最后初始化 ServiceSentinel
 	ServiceSentinelShared, err = NewServiceSentinel(bus)
 	return
@@ -78,38 +72,50 @@ func InitFrontendTemplates() error {
 	return nil
 }
 
-// InitDBFromPath 从给出的文件路径中加载数据库
+// InitDBFromPath 按配置初始化数据库；sqlite 时 path 作为文件路径回退。
 func InitDBFromPath(path string) error {
-	var err error
-	DB, err = gorm.Open(sqlite.Open(path), &gorm.Config{
-		CreateBatchSize: 200,
-	})
+	dialector, err := dbDialector(path)
+	if err != nil {
+		return err
+	}
+	DB, err = gorm.Open(dialector, &gorm.Config{CreateBatchSize: 200})
 	if err != nil {
 		return err
 	}
 	if Conf.Debug {
 		DB = DB.Debug()
 	}
-	err = DB.AutoMigrate(model.Server{}, model.User{}, model.ServerGroup{}, model.NotificationGroup{},
-		model.Notification{}, model.AlertRule{}, model.Service{}, model.NotificationGroupNotification{},
-		model.Cron{}, model.Transfer{}, model.ServerGroupServer{},
-		model.NAT{}, model.DDNSProfile{}, model.NotificationGroupNotification{},
-		model.WAF{}, model.Oauth2Bind{}, model.ServerTransfer{}, model.JWTSession{},
-		model.APIToken{}, model.MCPAuditLog{})
-	if err != nil {
+	if err := autoMigrate(); err != nil {
 		return err
 	}
+	return Conf.LoadDynamicFromDB(DB)
+}
 
-	// 旧 mcp:* scope 与 nezha:* 并行了一段时间，HasScope 通过别名让 mcp:fs:write
-	// 静默扩到 REST nezha:server:write。统一命名后这里把残留旧 scope 一次性
-	// 归一化（或在仅剩危险旧 scope 时整张 PAT 删除），保证运行时不再依赖别名。
-	if rewritten, deleted, mErr := model.MigrateLegacyMCPScopes(DB); mErr != nil {
-		log.Printf("NEZHA>> MigrateLegacyMCPScopes failed: %v", mErr)
-	} else if rewritten > 0 || deleted > 0 {
-		log.Printf("NEZHA>> Migrated legacy mcp:* api token scopes: rewritten=%d deleted=%d", rewritten, deleted)
+// dbDialector 按 Conf.Database.Type 选择驱动（sqlite/mysql/postgres）。
+func dbDialector(fallbackSqlitePath string) (gorm.Dialector, error) {
+	dsn := Conf.Database.DSN
+	switch Conf.Database.Type {
+	case "mysql":
+		return mysql.Open(dsn), nil
+	case "postgres", "postgresql":
+		return postgres.Open(dsn), nil
+	case "", "sqlite", "sqlite3":
+		if dsn == "" {
+			dsn = fallbackSqlitePath
+		}
+		return sqlite.Open(dsn), nil
+	default:
+		return nil, fmt.Errorf("unsupported database type: %s", Conf.Database.Type)
 	}
+}
 
-	return nil
+// autoMigrate 同步所有表结构。
+func autoMigrate() error {
+	return DB.AutoMigrate(model.Server{}, model.User{}, model.ServerGroup{}, model.NotificationGroup{},
+		model.Notification{}, model.AlertRule{}, model.Service{}, model.NotificationGroupNotification{},
+		model.Transfer{}, model.ServerGroupServer{},
+		model.WAF{}, model.Oauth2Bind{}, model.JWTSession{},
+		model.APIToken{}, model.SettingStore{})
 }
 
 // RecordTransferHourlyUsage 对流量记录进行打点
@@ -149,7 +155,7 @@ func RecordTransferHourlyUsage(servers ...*model.Server) {
 // CleanMonitorHistory 清理流量记录（TSDB 有自己的保留策略）
 func CleanMonitorHistory() {
 	// 清理已被删除的服务器的流量记录
-	DB.Unscoped().Delete(&model.Transfer{}, "server_id NOT IN (SELECT `id` FROM servers)")
+	DB.Unscoped().Delete(&model.Transfer{}, "server_id NOT IN (SELECT id FROM servers)")
 	// 计算可清理流量记录的时长
 	var allServerKeep time.Time
 	specialServerKeep := make(map[uint64]time.Time)
@@ -181,12 +187,12 @@ func CleanMonitorHistory() {
 		}
 	}
 	for id, couldRemove := range specialServerKeep {
-		DB.Unscoped().Delete(&model.Transfer{}, "server_id = ? AND datetime(`created_at`) < datetime(?)", id, couldRemove)
+		DB.Unscoped().Delete(&model.Transfer{}, "server_id = ? AND created_at < ?", id, couldRemove)
 	}
 	if allServerKeep.IsZero() {
 		DB.Unscoped().Delete(&model.Transfer{}, "server_id NOT IN (?)", specialServerIDs)
 	} else {
-		DB.Unscoped().Delete(&model.Transfer{}, "server_id NOT IN (?) AND datetime(`created_at`) < datetime(?)", specialServerIDs, allServerKeep)
+		DB.Unscoped().Delete(&model.Transfer{}, "server_id NOT IN (?) AND created_at < ?", specialServerIDs, allServerKeep)
 	}
 }
 
@@ -194,8 +200,8 @@ func CleanMonitorHistory() {
 func PerformMaintenance() {
 	log.Println("NEZHA>> Starting system maintenance...")
 
-	// 1. SQLite 维护
-	if DB != nil {
+	// 1. SQLite 维护（仅 sqlite 需要 VACUUM；mysql/postgres 自带回收机制）
+	if DB != nil && DB.Dialector.Name() == "sqlite" {
 		log.Println("NEZHA>> SQLite: Starting VACUUM...")
 		if err := DB.Exec("VACUUM").Error; err != nil {
 			log.Printf("NEZHA>> SQLite: VACUUM failed: %v", err)

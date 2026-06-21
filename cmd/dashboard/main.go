@@ -16,12 +16,10 @@ import (
 	"time"
 	_ "time/tzdata"
 
-	"github.com/gin-gonic/gin"
 	"github.com/ory/graceful"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/nezhahq/nezha/cmd/dashboard/controller"
-	"github.com/nezhahq/nezha/cmd/dashboard/controller/waf"
 	"github.com/nezhahq/nezha/cmd/dashboard/rpc"
 	"github.com/nezhahq/nezha/model"
 	"github.com/nezhahq/nezha/pkg/idcodec"
@@ -147,9 +145,6 @@ func main() {
 
 	singleton.CleanMonitorHistory()
 	rpc.DispatchKeepalive()
-	rpc.SetMCPKillSwitchObserver(func() bool {
-		return singleton.Conf == nil || !singleton.Conf.MCPEnabled()
-	})
 	go rpc.DispatchTask(serviceSentinelDispatchBus)
 	go singleton.AlertSentinelStart()
 
@@ -216,16 +211,6 @@ func main() {
 
 func newHTTPandGRPCMux(httpHandler http.Handler, grpcHandler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		natConfig := singleton.NATShared.GetNATConfigByDomain(r.Host)
-		if natConfig != nil {
-			if !natConfig.Enabled {
-				c, _ := gin.CreateTestContext(w)
-				waf.ShowBlockPage(c, fmt.Errorf("nat host %s is disabled", natConfig.Domain))
-				return
-			}
-			rpc.ServeNAT(w, r, natConfig)
-			return
-		}
 		if r.ProtoMajor == 2 && r.Header.Get("Content-Type") == "application/grpc" &&
 			strings.HasPrefix(r.URL.Path, "/"+proto.NezhaService_ServiceDesc.ServiceName) {
 			grpcHandler.ServeHTTP(w, r)

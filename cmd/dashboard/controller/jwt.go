@@ -30,6 +30,16 @@ func uaHash(c *gin.Context) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// clientIP 取请求来源 IP:优先 RealIp 中间件解析出的真实 IP,
+// 未配置 web_real_ip_header 时回退到对端地址。签发会话与校验会话
+// 必须共用本函数,两端 IP 取值一致才不会误判 IP mismatch。
+func clientIP(c *gin.Context) string {
+	if ip := c.GetString(model.CtxKeyRealIPStr); ip != "" {
+		return ip
+	}
+	return c.RemoteIP()
+}
+
 func issueJWTSession(c *gin.Context, user *model.User, jwtTimeoutHours int) (map[string]interface{}, error) {
 	keyID, err := utils.GenerateRandomString(jwtKeyIDBytes)
 	if err != nil {
@@ -43,10 +53,11 @@ func issueJWTSession(c *gin.Context, user *model.User, jwtTimeoutHours int) (map
 		return nil, err
 	}
 	now := time.Now()
+	ip := clientIP(c)
 	sess := model.JWTSession{
 		KeyID:        keyID,
 		UserID:       user.ID,
-		IP:           c.GetString(model.CtxKeyRealIPStr),
+		IP:           ip,
 		UAHash:       uaHash(c),
 		TokenVersion: user.TokenVersion,
 		ExpiresAt:    now.Add(time.Hour * time.Duration(jwtTimeoutHours)),
@@ -151,7 +162,7 @@ func identityHandler() func(c *gin.Context) any {
 			model.BlockIP(singleton.DB, realIP, model.WAFBlockReasonTypeBruteForceToken, model.BlockIDToken)
 			return nil
 		}
-		currentIP := c.GetString(model.CtxKeyRealIPStr)
+		currentIP := clientIP(c)
 		if sess.IP != currentIP {
 			c.Set(model.CtxKeyIsIPMismatch, true)
 			return nil

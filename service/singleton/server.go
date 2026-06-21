@@ -2,13 +2,9 @@ package singleton
 
 import (
 	"cmp"
-	"context"
-	"log"
 	"slices"
-	"strings"
 
 	"github.com/nezhahq/nezha/model"
-	"github.com/nezhahq/nezha/pkg/ddns"
 	"github.com/nezhahq/nezha/pkg/utils"
 )
 
@@ -30,10 +26,10 @@ func NewServerClass() *ServerClass {
 
 	var servers []model.Server
 	DB.Find(&servers)
-	for _, s := range servers {
-		innerS := s
-		model.InitServer(&innerS)
-		sc.list[innerS.ID] = &innerS
+	for i := range servers {
+		innerS := &servers[i]
+		model.InitServer(innerS)
+		sc.list[innerS.ID] = innerS
 		sc.uuidToID[innerS.UUID] = innerS.ID
 	}
 	sc.sortList()
@@ -81,12 +77,6 @@ func (c *ServerClass) Update(s *model.Server, uuid string) {
 
 	c.listMu.Unlock()
 
-	if s.EnableDDNS {
-		if err := c.UpdateDDNS(s, nil); err != nil {
-			log.Printf("NEZHA>> Failed to update DDNS for server %d: %v", err, s.ID)
-		}
-	}
-
 	c.sortList()
 }
 
@@ -120,25 +110,6 @@ func (c *ServerClass) UUIDToID(uuid string) (id uint64, ok bool) {
 
 	id, ok = c.uuidToID[uuid]
 	return
-}
-
-func (c *ServerClass) UpdateDDNS(server *model.Server, ip *model.IP) error {
-	confServers := strings.Split(Conf.DNSServers, ",")
-	ctx := context.WithValue(context.Background(), ddns.DNSServerKey{}, utils.IfOr(confServers[0] != "", confServers, utils.DNSServers))
-
-	providers, err := DDNSShared.GetDDNSProvidersFromProfiles(server.DDNSProfiles, utils.IfOr(ip != nil, ip, &server.GeoIP.IP), server.GetUserID())
-	if err != nil {
-		return err
-	}
-
-	for _, provider := range providers {
-		domains := server.OverrideDDNSDomains[provider.GetProfileID()]
-		go func(provider *ddns.Provider) {
-			provider.UpdateDomain(ctx, domains...)
-		}(provider)
-	}
-
-	return nil
 }
 
 func (c *ServerClass) sortList() {

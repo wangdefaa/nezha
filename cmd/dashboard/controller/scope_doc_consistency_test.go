@@ -34,19 +34,12 @@ func canonicalRoutes() []scopedRoute {
 	return []scopedRoute{
 		{"GET", "/api/v1/server", "nezha:inventory:read"},
 		{"PATCH", "/api/v1/server/{id}", "nezha:server:write"},
-		{"GET", "/api/v1/server/config/{id}", "nezha:server:write"},
-		{"POST", "/api/v1/server/config", "nezha:server:write"},
 		{"POST", "/api/v1/batch-delete/server", "nezha:inventory:delete"},
-		{"POST", "/api/v1/batch-move/server", "nezha:server:write"},
 		{"POST", "/api/v1/force-update/server", "nezha:server:write"},
 		{"POST", "/api/v1/server-group", "nezha:server:write"},
 		{"PATCH", "/api/v1/server-group/{id}", "nezha:server:write"},
 		{"POST", "/api/v1/batch-delete/server-group", "nezha:inventory:delete"},
-		{"POST", "/api/v1/terminal", "nezha:server:exec"},
-		{"GET", "/api/v1/ws/terminal/{id}", "nezha:server:exec"},
-		{"POST", "/api/v1/file", "nezha:server:read+write+delete"},
-		{"GET", "/api/v1/ws/file/{id}", "nezha:server:read+write+delete"},
-		// optional-auth scoped routes（controller.go:91-98）。这些 GET 端点既支持
+		// optional-auth scoped routes（controller.go）。这些 GET 端点既支持
 		// 未登录访客，也接受 PAT；当走 PAT 路径时 restScopeMiddleware 会强制对应的
 		// read scope。漏掉这一段会让 scope_doc.go 与实际 router 漂移而测试不报错。
 		{"GET", "/api/v1/ws/server", "nezha:inventory:read"},
@@ -57,11 +50,6 @@ func canonicalRoutes() []scopedRoute {
 		{"GET", "/api/v1/server/{id}/service", "nezha:service:read"},
 		{"GET", "/api/v1/server/{id}/metrics", "nezha:server:read"},
 
-		{"GET", "/api/v1/transfer", "nezha:transfer:read"},
-		{"POST", "/api/v1/transfer/{id}/cancel", "nezha:transfer:write"},
-		{"POST", "/api/v1/transfer/{id}/retry", "nezha:transfer:write"},
-		{"GET", "/api/v1/ws/transfer", "nezha:transfer:read"},
-
 		{"GET", "/api/v1/service/list", "nezha:service:read"},
 		{"POST", "/api/v1/service", "nezha:service:write"},
 		{"PATCH", "/api/v1/service/{id}", "nezha:service:write"},
@@ -71,23 +59,6 @@ func canonicalRoutes() []scopedRoute {
 		{"POST", "/api/v1/alert-rule", "nezha:alertrule:write"},
 		{"PATCH", "/api/v1/alert-rule/{id}", "nezha:alertrule:write"},
 		{"POST", "/api/v1/batch-delete/alert-rule", "nezha:alertrule:delete"},
-
-		{"GET", "/api/v1/cron", "nezha:cron:read"},
-		{"POST", "/api/v1/cron", "nezha:cron:write"},
-		{"PATCH", "/api/v1/cron/{id}", "nezha:cron:write"},
-		{"POST", "/api/v1/cron/{id}/manual", "nezha:cron:exec"},
-		{"POST", "/api/v1/batch-delete/cron", "nezha:cron:delete"},
-
-		{"GET", "/api/v1/ddns", "nezha:ddns:read"},
-		{"GET", "/api/v1/ddns/providers", "nezha:ddns:read"},
-		{"POST", "/api/v1/ddns", "nezha:ddns:write"},
-		{"PATCH", "/api/v1/ddns/{id}", "nezha:ddns:write"},
-		{"POST", "/api/v1/batch-delete/ddns", "nezha:ddns:delete"},
-
-		{"GET", "/api/v1/nat", "nezha:nat:read"},
-		{"POST", "/api/v1/nat", "nezha:nat:write"},
-		{"PATCH", "/api/v1/nat/{id}", "nezha:nat:write"},
-		{"POST", "/api/v1/batch-delete/nat", "nezha:nat:delete"},
 
 		{"GET", "/api/v1/notification", "nezha:notification:read"},
 		{"POST", "/api/v1/notification", "nezha:notification:write"},

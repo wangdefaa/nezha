@@ -5,16 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/http"
 	"net/netip"
-	"time"
 
-	"github.com/goccy/go-json"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 
-	"github.com/hashicorp/go-uuid"
 	"github.com/nezhahq/nezha/model"
 	"github.com/nezhahq/nezha/pkg/utils"
 	"github.com/nezhahq/nezha/proto"
@@ -22,15 +18,8 @@ import (
 	"github.com/nezhahq/nezha/service/singleton"
 )
 
-// SetMCPKillSwitchObserver re-exports the service/rpc hook so cmd/dashboard
-// can wire singleton.Conf.EnableMCP without importing the inner rpc package
-// (cmd/dashboard already imports cmd/dashboard/rpc for ServeRPC).
-func SetMCPKillSwitchObserver(fn func() bool) {
-	rpcService.SetMCPKillSwitchObserver(fn)
-}
-
 func ServeRPC() *grpc.Server {
-	// Streaming RPCs (RequestTask, IOStream) need the same real-IP + WAF
+	// Streaming RPCs (ReportSystemState, RequestTask) need the same real-IP + WAF
 	// gate as unary calls; without the stream interceptors authHandler.check
 	// sees an empty real IP, so brute-force BlockIP counters never key on a
 	// source and the WAF block table is bypassed at the stream entrypoint.
@@ -39,10 +28,6 @@ func ServeRPC() *grpc.Server {
 		grpc.ChainStreamInterceptor(getRealIpStream, wafStream),
 	)
 	rpcService.NezhaHandlerSingleton = rpcService.NewNezhaHandler()
-	// Install the IOStream revocation hook so ServerTransferShared can tear
-	// down terminal/FM/NAT sessions held by the previous owner on every
-	// ownership rotation (Register/revertTransition/OnServersDeleted).
-	singleton.ServerTransferStreamRevocationHook = rpcService.NezhaHandlerSingleton.RevokeStreamsForServer
 	proto.RegisterNezhaServiceServer(server, rpcService.NezhaHandlerSingleton)
 	return server
 }
@@ -189,74 +174,6 @@ func DispatchKeepalive() {
 			}
 		}
 	})
-}
-
-func ServeNAT(w http.ResponseWriter, r *http.Request, natConfig *model.NAT) {
-	server, _ := singleton.ServerShared.Get(natConfig.ServerID)
-	if server == nil {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("server not found or not connected"))
-		return
-	}
-	if server.GetTaskStream() == nil {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("server not found or not connected"))
-		return
-	}
-
-	streamId, err := uuid.GenerateUUID()
-	if err != nil {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write(fmt.Appendf(nil, "stream id error: %v", err))
-		return
-	}
-
-	// NAT streams are anonymous HTTP-facing tunnels; they are NOT reachable
-	// via /ws/terminal or /ws/file (which check stream ownership), so the
-	// creator user ID does not need to identify a real user. The targetServerID
-	// IS required though — the receiving agent must prove it is the server the
-	// NAT config addressed, otherwise any agent that snoops the streamId can
-	// answer NAT traffic on behalf of an unrelated host.
-	if err := rpcService.NezhaHandlerSingleton.CreateStream(streamId, 0, server.ID); err != nil {
-		w.WriteHeader(http.StatusTooManyRequests)
-		w.Write(fmt.Appendf(nil, "stream limit: %v", err))
-		return
-	}
-	defer rpcService.NezhaHandlerSingleton.CloseStream(streamId)
-
-	taskData, err := json.Marshal(model.TaskNAT{
-		StreamID: streamId,
-		Host:     natConfig.Host,
-	})
-	if err != nil {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write(fmt.Appendf(nil, "task data error: %v", err))
-		return
-	}
-
-	if err := server.SendTask(&proto.Task{
-		Type: model.TaskTypeNAT,
-		Data: string(taskData),
-	}); err != nil {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write(fmt.Appendf(nil, "send task error: %v", err))
-		return
-	}
-
-	wWrapped, err := utils.NewRequestWrapper(r, w)
-	if err != nil {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write(fmt.Appendf(nil, "request wrapper error: %v", err))
-		return
-	}
-
-	if err := rpcService.NezhaHandlerSingleton.UserConnected(streamId, wWrapped); err != nil {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write(fmt.Appendf(nil, "user connected error: %v", err))
-		return
-	}
-
-	rpcService.NezhaHandlerSingleton.StartStream(streamId, time.Second*10)
 }
 
 func canSendTaskToServer(task *model.Service, server *model.Server) bool {

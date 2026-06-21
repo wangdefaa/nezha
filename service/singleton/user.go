@@ -94,27 +94,14 @@ func OnUserDelete(id []uint64, errorFunc func(string, ...any) error) error {
 		return Localizer.ErrorT("user id not specified")
 	}
 
-	if ServerTransferShared != nil {
-		ServerTransferShared.OnUsersDeleted(id)
-	}
-
 	var (
-		cron, server   bool
-		crons, servers []uint64
+		server  bool
+		servers []uint64
 	)
 
 	slist := ServerShared.GetSortedList()
-	clist := CronShared.GetSortedList()
 	for _, uid := range id {
 		err := DB.Transaction(func(tx *gorm.DB) error {
-			crons = model.FindByUserID(clist, uid)
-			cron = len(crons) > 0
-			if cron {
-				if err := tx.Unscoped().Delete(&model.Cron{}, "id in (?)", crons).Error; err != nil {
-					return err
-				}
-			}
-
 			servers = model.FindByUserID(slist, uid)
 			server = len(servers) > 0
 			if server {
@@ -140,10 +127,6 @@ func OnUserDelete(id []uint64, errorFunc func(string, ...any) error) error {
 			return errorFunc("%v", err)
 		}
 
-		if cron {
-			CronShared.Delete(crons)
-		}
-
 		if server {
 			AlertsLock.Lock()
 			for _, sid := range servers {
@@ -156,11 +139,6 @@ func OnUserDelete(id []uint64, errorFunc func(string, ...any) error) error {
 				}
 			}
 			AlertsLock.Unlock()
-			// Cancel pending transfers before ServerShared drops the
-			// in-memory entry: same ordering rationale as batchDeleteServer.
-			if ServerTransferShared != nil {
-				ServerTransferShared.OnServersDeleted(servers)
-			}
 			ServerShared.Delete(servers)
 		}
 

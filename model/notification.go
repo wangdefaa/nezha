@@ -37,8 +37,8 @@ type Notification struct {
 	URL               string `json:"url"`
 	RequestMethod     uint8  `json:"request_method"`
 	RequestType       uint8  `json:"request_type"`
-	RequestHeader     string `json:"request_header" gorm:"type:longtext"`
-	RequestBody       string `json:"request_body" gorm:"type:longtext"`
+	RequestHeader     string `json:"request_header" gorm:"type:text"`
+	RequestBody       string `json:"request_body" gorm:"type:text"`
 	VerifyTLS         *bool  `json:"verify_tls,omitempty"`
 	FormatMetricUnits *bool  `json:"format_metric_units,omitempty"`
 }

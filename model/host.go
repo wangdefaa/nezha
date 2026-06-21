@@ -12,40 +12,25 @@ const (
 	MTReportHostState
 )
 
-type SensorTemperature struct {
-	Name        string
-	Temperature float64
-}
-
 type HostState struct {
-	CPU            float64             `json:"cpu,omitempty"`
-	MemUsed        uint64              `json:"mem_used,omitempty"`
-	SwapUsed       uint64              `json:"swap_used,omitempty"`
-	DiskUsed       uint64              `json:"disk_used,omitempty"`
-	NetInTransfer  uint64              `json:"net_in_transfer,omitempty"`
-	NetOutTransfer uint64              `json:"net_out_transfer,omitempty"`
-	NetInSpeed     uint64              `json:"net_in_speed,omitempty"`
-	NetOutSpeed    uint64              `json:"net_out_speed,omitempty"`
-	Uptime         uint64              `json:"uptime,omitempty"`
-	Load1          float64             `json:"load_1,omitempty"`
-	Load5          float64             `json:"load_5,omitempty"`
-	Load15         float64             `json:"load_15,omitempty"`
-	TcpConnCount   uint64              `json:"tcp_conn_count,omitempty"`
-	UdpConnCount   uint64              `json:"udp_conn_count,omitempty"`
-	ProcessCount   uint64              `json:"process_count,omitempty"`
-	Temperatures   []SensorTemperature `json:"temperatures,omitempty"`
-	GPU            []float64           `json:"gpu,omitempty"`
+	CPU            float64 `json:"cpu,omitempty"`
+	MemUsed        uint64  `json:"mem_used,omitempty"`
+	SwapUsed       uint64  `json:"swap_used,omitempty"`
+	DiskUsed       uint64  `json:"disk_used,omitempty"`
+	NetInTransfer  uint64  `json:"net_in_transfer,omitempty"`
+	NetOutTransfer uint64  `json:"net_out_transfer,omitempty"`
+	NetInSpeed     uint64  `json:"net_in_speed,omitempty"`
+	NetOutSpeed    uint64  `json:"net_out_speed,omitempty"`
+	Uptime         uint64  `json:"uptime,omitempty"`
+	Load1          float64 `json:"load_1,omitempty"`
+	Load5          float64 `json:"load_5,omitempty"`
+	Load15         float64 `json:"load_15,omitempty"`
+	TcpConnCount   uint64  `json:"tcp_conn_count,omitempty"`
+	UdpConnCount   uint64  `json:"udp_conn_count,omitempty"`
+	ProcessCount   uint64  `json:"process_count,omitempty"`
 }
 
 func (s *HostState) PB() *pb.State {
-	var ts []*pb.State_SensorTemperature
-	for _, t := range s.Temperatures {
-		ts = append(ts, &pb.State_SensorTemperature{
-			Name:        t.Name,
-			Temperature: t.Temperature,
-		})
-	}
-
 	return &pb.State{
 		Cpu:            s.CPU,
 		MemUsed:        s.MemUsed,
@@ -62,20 +47,10 @@ func (s *HostState) PB() *pb.State {
 		TcpConnCount:   s.TcpConnCount,
 		UdpConnCount:   s.UdpConnCount,
 		ProcessCount:   s.ProcessCount,
-		Temperatures:   ts,
-		Gpu:            s.GPU,
 	}
 }
 
 func PB2State(s *pb.State) HostState {
-	var ts []SensorTemperature
-	for _, t := range s.GetTemperatures() {
-		ts = append(ts, SensorTemperature{
-			Name:        t.GetName(),
-			Temperature: t.GetTemperature(),
-		})
-	}
-
 	return HostState{
 		CPU:            s.GetCpu(),
 		MemUsed:        s.GetMemUsed(),
@@ -92,8 +67,6 @@ func PB2State(s *pb.State) HostState {
 		TcpConnCount:   s.GetTcpConnCount(),
 		UdpConnCount:   s.GetUdpConnCount(),
 		ProcessCount:   s.GetProcessCount(),
-		Temperatures:   ts,
-		GPU:            s.GetGpu(),
 	}
 }
 
@@ -108,7 +81,6 @@ type Host struct {
 	Virtualization  string   `json:"virtualization,omitempty"`
 	BootTime        uint64   `json:"boot_time,omitempty"`
 	Version         string   `json:"version,omitempty"`
-	GPU             []string `json:"gpu,omitempty"`
 }
 
 func (h *Host) PB() *pb.Host {
@@ -123,7 +95,6 @@ func (h *Host) PB() *pb.Host {
 		Virtualization:  h.Virtualization,
 		BootTime:        h.BootTime,
 		Version:         h.Version,
-		Gpu:             h.GPU,
 	}
 }
 
@@ -138,7 +109,6 @@ func (h *Host) Filter() *Host {
 		Arch:           h.Arch,
 		Virtualization: h.Virtualization,
 		BootTime:       h.BootTime,
-		GPU:            h.GPU,
 	}
 }
 
@@ -154,7 +124,6 @@ func PB2Host(h *pb.Host) Host {
 		Virtualization:  h.GetVirtualization(),
 		BootTime:        h.GetBootTime(),
 		Version:         h.GetVersion(),
-		GPU:             h.GetGpu(),
 	}
 }
 

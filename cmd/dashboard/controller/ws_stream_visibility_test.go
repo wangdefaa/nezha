@@ -19,7 +19,7 @@ func makeStreamTestServers() []*model.Server {
 			HideForGuest: false,
 			Host: &model.Host{
 				Platform: "linux", PlatformVersion: "6.1",
-				CPU: []string{"amd64"}, Version: "agent-v1", GPU: []string{"rtx"},
+				CPU: []string{"amd64"}, Version: "agent-v1",
 			},
 			State:      &model.HostState{CPU: 0.1},
 			LastActive: time.Unix(1_700_000_000, 0).UTC(),
@@ -32,7 +32,7 @@ func makeStreamTestServers() []*model.Server {
 			HideForGuest: true,
 			Host: &model.Host{
 				Platform: "linux", PlatformVersion: "6.5",
-				CPU: []string{"amd64"}, Version: "agent-v2", GPU: []string{"rtx"},
+				CPU: []string{"amd64"}, Version: "agent-v2",
 			},
 			State:      &model.HostState{CPU: 0.2},
 			LastActive: time.Unix(1_700_000_001, 0).UTC(),
@@ -45,7 +45,7 @@ func makeStreamTestServers() []*model.Server {
 			HideForGuest: false,
 			Host: &model.Host{
 				Platform: "darwin", PlatformVersion: "14.0",
-				CPU: []string{"arm64"}, Version: "agent-v3", GPU: []string{"m2"},
+				CPU: []string{"arm64"}, Version: "agent-v3",
 			},
 			State:      &model.HostState{CPU: 0.3},
 			LastActive: time.Unix(1_700_000_002, 0).UTC(),
@@ -58,7 +58,7 @@ func makeStreamTestServers() []*model.Server {
 			HideForGuest: true,
 			Host: &model.Host{
 				Platform: "darwin", PlatformVersion: "14.1",
-				CPU: []string{"arm64"}, Version: "agent-v4", GPU: []string{"m2"},
+				CPU: []string{"arm64"}, Version: "agent-v4",
 			},
 			State:      &model.HostState{CPU: 0.4},
 			LastActive: time.Unix(1_700_000_003, 0).UTC(),
@@ -76,7 +76,7 @@ func findStreamServer(out []model.StreamServer, id uint64) *model.StreamServer {
 }
 
 // Guest: no auth → skip every HideForGuest server, Host.Filter() drops
-// PlatformVersion and agent Version while keeping the rest (including GPU).
+// PlatformVersion and agent Version while keeping the rest.
 func TestFilterServersForViewerGuestHidesPrivateAndRedactsHost(t *testing.T) {
 	out := filterServersForViewer(makeStreamTestServers(), 0, false, true, nil)
 

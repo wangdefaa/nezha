@@ -7,6 +7,7 @@ import (
 
 	"github.com/nezhahq/nezha/pkg/utils"
 	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 const (
@@ -33,12 +34,26 @@ type WAFApiMock struct {
 	Count           uint64 `json:"count,omitempty"`
 }
 
+// IPBytes 16 字节 IP 主键，跨库映射：mysql=binary(16) / postgres=bytea / sqlite=blob。
+type IPBytes []byte
+
+func (IPBytes) GormDBDataType(db *gorm.DB, field *schema.Field) string {
+	switch db.Dialector.Name() {
+	case "mysql":
+		return "binary(16)"
+	case "postgres":
+		return "bytea"
+	default:
+		return "blob"
+	}
+}
+
 type WAF struct {
-	IP              []byte `gorm:"type:binary(16);primaryKey" json:"ip,omitempty"`
-	BlockIdentifier int64  `gorm:"primaryKey" json:"block_identifier,omitempty"`
-	BlockReason     uint8  `json:"block_reason,omitempty"`
-	BlockTimestamp  uint64 `gorm:"index" json:"block_timestamp,omitempty"`
-	Count           uint64 `json:"count,omitempty"`
+	IP              IPBytes `gorm:"primaryKey" json:"ip,omitempty"`
+	BlockIdentifier int64   `gorm:"primaryKey" json:"block_identifier,omitempty"`
+	BlockReason     uint8   `json:"block_reason,omitempty"`
+	BlockTimestamp  uint64  `gorm:"index" json:"block_timestamp,omitempty"`
+	Count           uint64  `json:"count,omitempty"`
 }
 
 func (w *WAF) TableName() string {
@@ -112,7 +127,7 @@ func BlockIP(db *gorm.DB, ip string, reason uint8, uid int64) error {
 		return err
 	}
 	w := WAF{
-		IP:              ipBinary,
+		IP:              IPBytes(ipBinary),
 		BlockIdentifier: uid,
 	}
 	now := uint64(time.Now().Unix())

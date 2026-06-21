@@ -7,7 +7,6 @@ service NezhaService {
   rpc ReportSystemState(stream State) returns (stream Receipt) {}
   rpc ReportSystemInfo(Host) returns (Receipt) {}
   rpc RequestTask(stream TaskResult) returns (stream Task) {}
-  rpc IOStream(stream IOStreamData) returns (stream IOStreamData) {}
   rpc ReportGeoIP(GeoIP) returns (GeoIP) {}
   rpc ReportSystemInfo2(Host) returns (Uint64Receipt) {}
 }
@@ -23,7 +22,6 @@ message Host {
   string virtualization = 8;
   uint64 boot_time = 9;
   string version = 10;
-  repeated string gpu = 11;
 }
 
 message State {
@@ -42,13 +40,6 @@ message State {
   uint64 tcp_conn_count = 13;
   uint64 udp_conn_count = 14;
   uint64 process_count = 15;
-  repeated State_SensorTemperature temperatures = 16;
-  repeated double gpu = 17;
-}
-
-message State_SensorTemperature {
-  string name = 1;
-  double temperature = 2;
 }
 
 message Task {
@@ -68,8 +59,6 @@ message TaskResult {
 message Receipt { bool proced = 1; }
 
 message Uint64Receipt { uint64 data = 1; }
-
-message IOStreamData { bytes data = 1; }
 
 message GeoIP {
   bool use6 = 1;

@@ -110,12 +110,6 @@ func restScopeAllOf(scopes ...string) gin.HandlerFunc {
 	}
 }
 
-// serverConfigSensitiveScope 收紧 GET /server/config/:id 的 PAT scope 到
-// ScopeServerWrite：返回体里包含 client_secret 等下发到 agent 的凭据，单纯
-// nezha:server:read 不应足以读取。命名刻意带 Sensitive 而不是 Read，避免下
-// 个维护者把它当成普通 read scope 还原成 ScopeServerRead 重新打开提权链。
-func serverConfigSensitiveScope() string { return model.ScopeServerWrite }
-
 // restPATForbiddenMiddleware 在「自我管理」类端点上显式拒绝 PAT。
 //
 // 这些端点（profile / api-tokens / oauth2 绑定 / refresh-token）一旦允许 PAT

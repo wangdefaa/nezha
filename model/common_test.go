@@ -46,13 +46,13 @@ func TestCommonHasPermission(t *testing.T) {
 
 func TestSearchByID(t *testing.T) {
 	t.Run("WithoutPriorityList", func(t *testing.T) {
-		list, exp := []*DDNSProfile{
+		list, exp := []*Service{
 			{Common: Common{ID: 1}},
 			{Common: Common{ID: 2}},
 			{Common: Common{ID: 3}},
 			{Common: Common{ID: 4}},
 			{Common: Common{ID: 5}},
-		}, []*DDNSProfile{
+		}, []*Service{
 			{Common: Common{ID: 4}},
 			{Common: Common{ID: 1}},
 			{Common: Common{ID: 3}},

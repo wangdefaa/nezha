@@ -34,23 +34,18 @@ func setupTenancyTest(t *testing.T) func() {
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(
 		&model.User{},
-		&model.Cron{},
-		&model.DDNSProfile{},
 		&model.Notification{},
 		&model.AlertRule{},
 		&model.NotificationGroup{},
 	))
-	originalDDNS := singleton.DDNSShared
 	originalNotif := singleton.NotificationShared
 	singleton.DB = db
 	singleton.ServerShared = singleton.NewEmptyServerClassForTest()
-	singleton.DDNSShared = singleton.NewEmptyDDNSClassForTest()
 	singleton.NotificationShared = singleton.NewEmptyNotificationClassForTest()
 	return func() {
 		singleton.DB = originalDB
 		singleton.Localizer = originalLocalizer
 		singleton.ServerShared = originalServer
-		singleton.DDNSShared = originalDDNS
 		singleton.NotificationShared = originalNotif
 	}
 }
@@ -72,129 +67,13 @@ func ctxAsMemberWithBody(uid uint64, body any) *gin.Context {
 }
 
 // 设计说明：create 路径的"手工 user_id 注入"防护通过两点联合保证：
-//  1. CronForm/DDNSForm/NotificationForm 等 form struct 不嵌入 Common，
+//  1. NotificationForm 等 form struct 不嵌入 Common，
 //     绑定时不会 unmarshal "user_id" 字段
 //  2. handler 第一行 `xxx.UserID = getUid(c)` 显式覆盖
 // 因为 create 路径还会依赖 ServerShared / Localizer 等外部 singleton，
 // 在单元测试中难以无副作用地完整运行；改用代码静态约束：在 form_no_userid_test.go
 // 里用 reflect 验证所有 *Form 结构无 UserID 字段（next step）。
 // 这里只测真正的所有权防线：update / delete。
-
-// ---------- Cron ----------
-
-func TestTenancy_UpdateCron_ForeignOwnerRejected(t *testing.T) {
-	defer setupTenancyTest(t)()
-
-	foreign := model.Cron{
-		Common:    model.Common{UserID: 999},
-		Name:      "foreign-cron",
-		TaskType:  model.CronTypeCronTask,
-		Scheduler: "@every 5m",
-		Command:   "echo",
-	}
-	require.NoError(t, singleton.DB.Create(&foreign).Error)
-
-	c := ctxAsMemberWithBody(10, map[string]any{
-		"name":      "hijacked",
-		"task_type": model.CronTypeCronTask,
-		"scheduler": "@every 1m",
-		"command":   "echo pwned",
-		"servers":   []uint64{},
-		"cover":     model.CronCoverAll,
-	})
-	c.Params = gin.Params{{Key: "id", Value: itoa(foreign.ID)}}
-	_, err := updateCron(c)
-	require.Error(t, err, "member 10 must not be able to update foreign-owned cron")
-
-	var after model.Cron
-	require.NoError(t, singleton.DB.First(&after, foreign.ID).Error)
-	require.Equal(t, "foreign-cron", after.Name, "foreign cron must not be modified")
-	require.Equal(t, uint64(999), after.UserID, "ownership must remain")
-}
-
-// ---------- DDNS ----------
-
-func TestTenancy_CreateDDNS_InjectedUserIDIgnored(t *testing.T) {
-	defer setupTenancyTest(t)()
-
-	body := map[string]any{
-		"name":            "evil-ddns",
-		"provider":        "webhook",
-		"access_id":       "x",
-		"access_secret":   "y",
-		"webhook_url":     "http://127.0.0.1/",
-		"webhook_method":  "GET",
-		"webhook_request_type": "json",
-		"webhook_request_body": "",
-		"webhook_headers": "",
-		"user_id":         999, // attacker
-	}
-	c := ctxAsMemberWithBody(10, body)
-	_, err := createDDNS(c)
-	if err == nil {
-		var stored model.DDNSProfile
-		require.NoError(t, singleton.DB.First(&stored, "name = ?", "evil-ddns").Error)
-		require.Equal(t, uint64(10), stored.UserID,
-			"createDDNS must overwrite UserID with caller")
-	}
-}
-
-func TestTenancy_UpdateDDNS_ForeignOwnerRejected(t *testing.T) {
-	defer setupTenancyTest(t)()
-
-	foreign := model.DDNSProfile{
-		Common:             model.Common{UserID: 999},
-		Name:               "foreign-ddns",
-		Provider:           "webhook",
-		AccessID:           "x",
-		AccessSecret:       "y",
-		WebhookURL:         "http://127.0.0.1/",
-		WebhookMethod:      1,
-		WebhookRequestType: 1,
-	}
-	require.NoError(t, singleton.DB.Create(&foreign).Error)
-
-	c := ctxAsMemberWithBody(10, map[string]any{
-		"name":          "hijacked",
-		"provider":      "webhook",
-		"access_id":     "x",
-		"access_secret": "y",
-		"webhook_url":   "http://attacker/",
-		"webhook_method": "GET",
-		"webhook_request_type": "json",
-	})
-	c.Params = gin.Params{{Key: "id", Value: itoa(foreign.ID)}}
-	_, err := updateDDNS(c)
-	require.Error(t, err, "member must not be able to update foreign-owned DDNS")
-
-	var after model.DDNSProfile
-	require.NoError(t, singleton.DB.First(&after, foreign.ID).Error)
-	require.Equal(t, "foreign-ddns", after.Name, "foreign DDNS must not be modified")
-	require.Equal(t, "http://127.0.0.1/", after.WebhookURL, "webhook URL must not be hijacked")
-}
-
-func TestTenancy_DeleteDDNS_ForeignOwnerRejected(t *testing.T) {
-	defer setupTenancyTest(t)()
-
-	foreign := model.DDNSProfile{
-		Common:             model.Common{UserID: 999},
-		Name:               "foreign-ddns-del",
-		Provider:           "webhook",
-		WebhookURL:         "http://127.0.0.1/",
-		WebhookMethod:      1,
-		WebhookRequestType: 1,
-	}
-	require.NoError(t, singleton.DB.Create(&foreign).Error)
-	singleton.DDNSShared.InsertForTest(&foreign)
-
-	c := ctxAsMemberWithBody(10, []uint64{foreign.ID})
-	_, err := batchDeleteDDNS(c)
-	require.Error(t, err, "member must not be able to batch-delete foreign DDNS")
-
-	var after model.DDNSProfile
-	require.NoErrorf(t, singleton.DB.First(&after, foreign.ID).Error,
-		"foreign DDNS must still exist after member's failed batch-delete (handler err=%v)", err)
-}
 
 // ---------- Notification ----------
 
@@ -287,11 +166,6 @@ func TestTenancy_BatchDeleteAlertRule_ForeignOwnerSilentlySkipped(t *testing.T) 
 		"member's batch-delete must not be able to remove foreign alert rule")
 	require.Equal(t, uint64(999), after.UserID)
 }
-
-// Cron batch-delete 的所有权保护与 updateCron 共用 cr.HasPermission 检查路径
-// （cron.go:127 vs cron.go:207），updateCron 用例已经覆盖该路径。这里不复测
-// 是因为 batchDeleteCron 调 CronShared.CheckPermission，需要完整 CronShared
-// 在内存中注册，会让单测 fixture 显著膨胀，性价比低。
 
 // ---------- Notification batch-delete ----------
 

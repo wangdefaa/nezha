@@ -44,8 +44,6 @@ func ServeWeb(frontendDist fs.FS) http.Handler {
 
 	routers(r, frontendDist)
 
-	kickoffTransferGC()
-
 	return r
 }
 
@@ -57,18 +55,6 @@ func routers(r *gin.Engine, frontendDist fs.FS) {
 	if err := authMiddleware.MiddlewareInit(); err != nil {
 		log.Fatal("authMiddleware.MiddlewareInit Error:" + err.Error())
 	}
-	// /mcp — Model Context Protocol endpoint, authenticated by PAT only (闸 1 + 闸 2)。
-	// 不放在 /api/v1 下：MCP client 配置 URL 更短，且 MCP transport 协议演进与 REST API
-	// 解耦。鉴权一律走 apiTokenAuthMiddleware；不接受 JWT 以避免浏览器误触。
-	// mcpOriginGuard 防止 DNS rebinding / 浏览器跨站调用。
-	r.POST("/mcp", mcpOriginGuard(), apiTokenAuthMiddleware(), mcpEndpoint)
-	// Streamable HTTP 规范要求：不实现 standalone SSE / session 时，GET / DELETE
-	// 必须显式返回 405，让客户端走 POST-only 路径并跳过 session 终止流程。
-	// 不显式注册时，Gin 会走 NoRoute → fallbackToFrontend，对 MCP 客户端是 HTML/404。
-	r.GET("/mcp", mcpOriginGuard(), mcpMethodNotAllowed)
-	r.DELETE("/mcp", mcpOriginGuard(), mcpMethodNotAllowed)
-	r.GET("/mcp/download/:token", mcpOriginGuard(), transferDownloadHandler)
-	r.POST("/mcp/upload/:token", mcpOriginGuard(), transferUploadHandler)
 
 	api := r.Group("api/v1")
 	api.POST("/login", authMiddleware.LoginHandler)
@@ -115,31 +101,15 @@ func routers(r *gin.Engine, frontendDist fs.FS) {
 	// 资源族划分：
 	//   - nezha:inventory:* —— 对“服务器台账”的枚举与删除（列出 server / server-group、
 	//     删除 server / server-group）。这是管理后台清单管理动作。
-	//   - nezha:server:*    —— 对已知 server 的运行态操作（exec、文件读写、编辑配置、
+	//   - nezha:server:*    —— 对已知 server 的运行态操作（编辑配置、
 	//     force-update、batch-move）。
-	auth.POST("/terminal", restScopeMiddleware(model.ScopeServerExec), commonHandler(createTerminal))
-	auth.GET("/ws/terminal/:id", restScopeMiddleware(model.ScopeServerExec), commonHandler(terminalStream))
-	auth.POST("/file", restScopeAllOf(model.ScopeServerRead, model.ScopeServerWrite, model.ScopeServerDelete), commonHandler(createFM))
-	auth.GET("/ws/file/:id", restScopeAllOf(model.ScopeServerRead, model.ScopeServerWrite, model.ScopeServerDelete), commonHandler(fmStream))
 	auth.GET("/server", restScopeMiddleware(model.ScopeInventoryRead), listHandler(listServer))
 	auth.PATCH("/server/:id", restScopeMiddleware(model.ScopeServerWrite), commonHandler(updateServer))
-	auth.GET("/server/config/:id", restScopeMiddleware(serverConfigSensitiveScope()), commonHandler(getServerConfig))
-	auth.POST("/server/config", restScopeMiddleware(model.ScopeServerWrite), commonHandler(setServerConfig))
 	auth.POST("/batch-delete/server", restScopeMiddleware(model.ScopeInventoryDelete), commonHandler(batchDeleteServer))
-	auth.POST("/batch-move/server", restScopeMiddleware(model.ScopeServerWrite), commonHandler(batchMoveServer))
 	auth.POST("/force-update/server", restScopeMiddleware(model.ScopeServerWrite), commonHandler(forceUpdateServer))
 	auth.POST("/server-group", restScopeMiddleware(model.ScopeServerWrite), commonHandler(createServerGroup))
 	auth.PATCH("/server-group/:id", restScopeMiddleware(model.ScopeServerWrite), commonHandler(updateServerGroup))
 	auth.POST("/batch-delete/server-group", restScopeMiddleware(model.ScopeInventoryDelete), commonHandler(batchDeleteServerGroup))
-
-	// transfer — 严格使用 nezha:transfer 资源族 scope（read/write/delete）。
-	// 注意：曾经计划让 nezha:server:read 兼听只读 transfer，但 restScopeMiddleware
-	// / APIToken.HasScope 不做 server↔transfer 别名展开，前端 SCOPE_OPTIONS 也已经
-	// 单独暴露 nezha:transfer:read，所以这里维持精确匹配语义。
-	auth.GET("/transfer", restScopeMiddleware(model.ScopeTransferRead), listHandler(listServerTransfer))
-	auth.POST("/transfer/:id/cancel", restScopeMiddleware(model.ScopeTransferWrite), commonHandler(cancelServerTransfer))
-	auth.POST("/transfer/:id/retry", restScopeMiddleware(model.ScopeTransferWrite), commonHandler(retryServerTransfer))
-	auth.GET("/ws/transfer", restScopeMiddleware(model.ScopeTransferRead), commonHandler(transferStream))
 
 	// service monitor
 	auth.GET("/service/list", restScopeMiddleware(model.ScopeServiceRead), listHandler(listService))
@@ -161,23 +131,6 @@ func routers(r *gin.Engine, frontendDist fs.FS) {
 	auth.POST("/alert-rule", restScopeMiddleware(model.ScopeAlertRuleWrite), commonHandler(createAlertRule))
 	auth.PATCH("/alert-rule/:id", restScopeMiddleware(model.ScopeAlertRuleWrite), commonHandler(updateAlertRule))
 	auth.POST("/batch-delete/alert-rule", restScopeMiddleware(model.ScopeAlertRuleDelete), commonHandler(batchDeleteAlertRule))
-
-	auth.GET("/cron", restScopeMiddleware(model.ScopeCronRead), listHandler(listCron))
-	auth.POST("/cron", restScopeMiddleware(model.ScopeCronWrite), commonHandler(createCron))
-	auth.PATCH("/cron/:id", restScopeMiddleware(model.ScopeCronWrite), commonHandler(updateCron))
-	auth.POST("/cron/:id/manual", restScopeMiddleware(model.ScopeCronExec), commonHandler(manualTriggerCron))
-	auth.POST("/batch-delete/cron", restScopeMiddleware(model.ScopeCronDelete), commonHandler(batchDeleteCron))
-
-	auth.GET("/ddns", restScopeMiddleware(model.ScopeDDNSRead), listHandler(listDDNS))
-	auth.GET("/ddns/providers", restScopeMiddleware(model.ScopeDDNSRead), commonHandler(listProviders))
-	auth.POST("/ddns", restScopeMiddleware(model.ScopeDDNSWrite), commonHandler(createDDNS))
-	auth.PATCH("/ddns/:id", restScopeMiddleware(model.ScopeDDNSWrite), commonHandler(updateDDNS))
-	auth.POST("/batch-delete/ddns", restScopeMiddleware(model.ScopeDDNSDelete), commonHandler(batchDeleteDDNS))
-
-	auth.GET("/nat", restScopeMiddleware(model.ScopeNATRead), listHandler(listNAT))
-	auth.POST("/nat", restScopeMiddleware(model.ScopeNATWrite), commonHandler(createNAT))
-	auth.PATCH("/nat/:id", restScopeMiddleware(model.ScopeNATWrite), commonHandler(updateNAT))
-	auth.POST("/batch-delete/nat", restScopeMiddleware(model.ScopeNATDelete), commonHandler(batchDeleteNAT))
 
 	// 管理员资源 — 仅 nezha:* / nezha:admin:* 持有者可调（adminHandler 进一步校验 user.Role）。
 	auth.GET("/user", restScopeMiddleware(model.ScopeAdminAll), adminHandler(listUser))
@@ -410,11 +363,8 @@ func fallbackToFrontend(frontendDist fs.FS) func(*gin.Context) {
 		regexp.MustCompile(`^/dashboard/$`),
 		regexp.MustCompile(`^/dashboard/login$`),
 		regexp.MustCompile(`^/dashboard/service$`),
-		regexp.MustCompile(`^/dashboard/cron$`),
 		regexp.MustCompile(`^/dashboard/notification$`),
 		regexp.MustCompile(`^/dashboard/alert-rule$`),
-		regexp.MustCompile(`^/dashboard/ddns$`),
-		regexp.MustCompile(`^/dashboard/nat$`),
 		regexp.MustCompile(`^/dashboard/server-group$`),
 		regexp.MustCompile(`^/dashboard/notification-group$`),
 		regexp.MustCompile(`^/dashboard/profile$`),
@@ -427,7 +377,6 @@ func fallbackToFrontend(frontendDist fs.FS) func(*gin.Context) {
 		// 直接刷新该页面变成 404（HTTP 状态码层面，body 仍是 index.html，所以
 		// 浏览器内 SPA 看起来正常，但 monitoring / 链接预览会以为站点挂了）。
 		// 新增前端路由时必须在 admin-frontend/src/main.tsx 与这里同步加。
-		regexp.MustCompile(`^/dashboard/transfer$`),
 	}
 
 	getFallbackStatusCode := func(path string) int {

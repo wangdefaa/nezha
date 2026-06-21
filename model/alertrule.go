@@ -15,16 +15,12 @@ const (
 
 type AlertRule struct {
 	Common
-	Name                   string   `json:"name"`
-	RulesRaw               string   `json:"-"`
-	Enable                 *bool    `json:"enable,omitempty"`
-	TriggerMode            uint8    `gorm:"default:0" json:"trigger_mode"` // 触发模式: 0-始终触发(默认) 1-单次触发
-	NotificationGroupID    uint64   `json:"notification_group_id"`         // 该报警规则所在的通知组
-	FailTriggerTasksRaw    string   `gorm:"default:'[]'" json:"-"`
-	RecoverTriggerTasksRaw string   `gorm:"default:'[]'" json:"-"`
-	Rules                  []*Rule  `gorm:"-" json:"rules"`
-	FailTriggerTasks       []uint64 `gorm:"-" json:"fail_trigger_tasks"`    // 失败时执行的触发任务id
-	RecoverTriggerTasks    []uint64 `gorm:"-" json:"recover_trigger_tasks"` // 恢复时执行的触发任务id
+	Name                string  `json:"name"`
+	RulesRaw            string  `json:"-"`
+	Enable              *bool   `json:"enable,omitempty"`
+	TriggerMode         uint8   `gorm:"default:0" json:"trigger_mode"` // 触发模式: 0-始终触发(默认) 1-单次触发
+	NotificationGroupID uint64  `json:"notification_group_id"`         // 该报警规则所在的通知组
+	Rules               []*Rule `gorm:"-" json:"rules"`
 }
 
 func (r *AlertRule) BeforeSave(tx *gorm.DB) error {
@@ -33,31 +29,11 @@ func (r *AlertRule) BeforeSave(tx *gorm.DB) error {
 	} else {
 		r.RulesRaw = string(data)
 	}
-	if data, err := json.Marshal(r.FailTriggerTasks); err != nil {
-		return err
-	} else {
-		r.FailTriggerTasksRaw = string(data)
-	}
-	if data, err := json.Marshal(r.RecoverTriggerTasks); err != nil {
-		return err
-	} else {
-		r.RecoverTriggerTasksRaw = string(data)
-	}
 	return nil
 }
 
 func (r *AlertRule) AfterFind(tx *gorm.DB) error {
-	var err error
-	if err = json.Unmarshal([]byte(r.RulesRaw), &r.Rules); err != nil {
-		return err
-	}
-	if err = json.Unmarshal([]byte(r.FailTriggerTasksRaw), &r.FailTriggerTasks); err != nil {
-		return err
-	}
-	if err = json.Unmarshal([]byte(r.RecoverTriggerTasksRaw), &r.RecoverTriggerTasks); err != nil {
-		return err
-	}
-	return nil
+	return json.Unmarshal([]byte(r.RulesRaw), &r.Rules)
 }
 
 func (r *AlertRule) Enabled() bool {

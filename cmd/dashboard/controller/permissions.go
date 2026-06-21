@@ -6,25 +6,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/nezhahq/nezha/model"
-	"github.com/nezhahq/nezha/service/rpc"
 	"github.com/nezhahq/nezha/service/singleton"
 )
-
-// streamAttachAllowedForRequest combines the existing creator/admin check
-// with a per-request PAT whitelist gate against the stream's target server.
-// Terminal and FM endpoints attach to a long-lived stream and inherit any
-// authority the creator held — without the second gate an admin's PAT
-// scoped to [X] could hijack a stream targeting server Y.
-func streamAttachAllowedForRequest(c *gin.Context, streamId string) bool {
-	if !rpc.NezhaHandlerSingleton.IsStreamAuthorizedForUser(streamId, getUid(c), callerIsAdmin(c)) {
-		return false
-	}
-	target, ok := rpc.NezhaHandlerSingleton.StreamTarget(streamId)
-	if !ok {
-		return false
-	}
-	return patAllowsServer(c, target)
-}
 
 func callerIsAdmin(c *gin.Context) bool {
 	auth, ok := c.Get(model.CtxKeyAuthorizedUser)
@@ -63,8 +46,8 @@ func patAllowsServer(c *gin.Context, serverID uint64) bool {
 // and unscoped PATs have no whitelist to escape and pass through.
 //
 // This is the gate that turns the implicit-cover bypass at
-// /api/v1/{cron,service} POST/PATCH into a 403; the dispatch side
-// (CronTrigger, DispatchTask) does not re-check PAT context, so the only
+// /api/v1/service POST/PATCH into a 403; the dispatch side
+// (DispatchTask) does not re-check PAT context, so the only
 // safe place to enforce it is at write time.
 func patHasServerWhitelist(c *gin.Context) bool {
 	v, ok := c.Get(model.CtxKeyAPIToken)
@@ -92,29 +75,6 @@ func patAccessorFromContext(c *gin.Context) model.APITokenAccessor {
 		return nil
 	}
 	return tok
-}
-
-// checkCronServerListPermission validates the cron's Servers field. Under
-// CronCoverIgnoreAll / CronCoverAlertTrigger the field is an allow-list and
-// must satisfy Server.HasPermission (owner + PAT whitelist). Under
-// CronCoverAll the field is a deny-list expressing exclusion; the caller
-// only needs to own each listed server (PAT whitelist intersection is
-// enforced separately by assertPATCoverFanoutWithinWhitelist).
-func checkCronServerListPermission(c *gin.Context, cover uint8, servers []uint64, ownerUID uint64) error {
-	if cover == model.CronCoverAll {
-		denySet := make(map[uint64]bool, len(servers))
-		for _, id := range servers {
-			denySet[id] = true
-		}
-		if !denyListOwnedByCaller(ownerUID, denySet) {
-			return singleton.Localizer.ErrorT("permission denied")
-		}
-		return nil
-	}
-	if !singleton.ServerShared.CheckPermission(c, slices.Values(servers)) {
-		return singleton.Localizer.ErrorT("permission denied")
-	}
-	return nil
 }
 
 // checkServiceSkipServerPermission is the service-monitor analogue.
@@ -296,21 +256,6 @@ func patGroupMembershipAccessAllowed(c *gin.Context, groupID uint64) bool {
 	return true
 }
 
-// isValidCronCover reports whether cover is one of the runtime-recognised
-// Cron Cover constants. Unknown values must be rejected at write time —
-// CronTrigger's periodic scheduler path has no PAT context, so any dirty
-// row persisted with an unrecognised Cover still fans out via the default
-// branch (no CoverAll/IgnoreAll match → broadcast to every server passing
-// cronCanSendToServer). The same allowlist applies for batch-delete and
-// manual-trigger guard wiring.
-func isValidCronCover(cover uint8) bool {
-	switch cover {
-	case model.CronCoverIgnoreAll, model.CronCoverAll, model.CronCoverAlertTrigger:
-		return true
-	}
-	return false
-}
-
 // isValidServiceCover is the service-monitor analogue. ServiceCoverAll and
 // ServiceCoverIgnoreAll are the only branches DispatchTask + Snapshot
 // recognise; anything else degrades to "default fan-out" which silently
@@ -323,28 +268,8 @@ func isValidServiceCover(cover uint8) bool {
 	return false
 }
 
-// cronCoverMode 把 model.CronCover* 翻译成共享底座认识的 coverMode。
-//
-// 未来引入新的 Cron Cover 常量时必须在这里显式 wire，否则
-// assertPATCoverFanoutWithinWhitelist 会按 default 分支拒绝，避免悄悄绕过。
-func cronCoverMode(cover uint8) coverMode {
-	switch cover {
-	case model.CronCoverAll:
-		return coverModeAllMinusDeny
-	case model.CronCoverIgnoreAll:
-		return coverModeAllowList
-	case model.CronCoverAlertTrigger:
-		return coverModePinnedByCaller
-	default:
-		// 未识别 cover 不能降级成 pinned——pinned 会被 assert 直接放行，
-		// 让受限 PAT 借未知 cover 绕过 fan-out 收口。统一报告 unknown，
-		// 由 assert 的 default 分支 fail-closed。
-		return coverModeUnknown
-	}
-}
-
-// serviceCoverMode 是 cronCoverMode 在 service monitor 侧的对照。Service 没
-// 有 alert-trigger 这一档，只有 All 与 IgnoreAll。
+// serviceCoverMode 把 model.ServiceCover* 翻译成共享底座认识的 coverMode。
+// Service 没有 alert-trigger 这一档，只有 All 与 IgnoreAll。
 func serviceCoverMode(cover uint8) coverMode {
 	switch cover {
 	case model.ServiceCoverAll:
@@ -357,51 +282,14 @@ func serviceCoverMode(cover uint8) coverMode {
 	}
 }
 
-// rejectImplicitCoverForLimitedPAT enforces the cover-all PAT guard for the
-// cron write path. cf.Servers is the literal allow/deny list; under
-// CronCoverAll it is a deny-list, under CronCoverIgnoreAll it is an
-// allow-list, and under CronCoverAlertTrigger it does not gate dispatch at
-// all (the alert trigger pins the target server at fire time). A PAT that
-// carries a server_ids whitelist must therefore either (a) leave the deny-list
-// empty under non-CoverAll modes — that's allow-list semantics, safe — or
-// (b) under CronCoverAll, supply a deny-list that already covers every
-// owner-visible server outside the PAT whitelist, otherwise CronTrigger fans
-// out to those servers. Alert triggers stay unrestricted because their
-// dispatch boundary is enforced by Cron.HasPermission against the trigger
-// server id.
-func rejectImplicitCoverForLimitedPAT(c *gin.Context, cover uint8, denyServers []uint64) error {
-	return rejectImplicitCoverForLimitedPATWithOwner(c, cover, denyServers, getUid(c))
-}
-
-// rejectImplicitCoverForLimitedPATWithOwner is the explicit-owner variant
-// of rejectImplicitCoverForLimitedPAT. updateCron MUST use this with the
-// existing cron's UserID — not the caller — because CronTrigger fans out
-// to the cron OWNER's servers at dispatch time, regardless of who issued
-// the PATCH. Defaulting to getUid(c) (as rejectImplicitCoverForLimitedPAT
-// does for createCron) is only safe when the caller is the owner-to-be,
-// i.e. the cron is being created with cr.UserID = getUid(c).
-//
-// 实现层只是把参数翻译到共享底座 assertPATCoverFanoutWithinWhitelist 上；
-// 写侧/运行时入口共用同一裁决，避免两边语义漂移。
-func rejectImplicitCoverForLimitedPATWithOwner(c *gin.Context, cover uint8, denyServers []uint64, ownerUID uint64) error {
-	// 写侧只关心 CronCoverAll 的 deny-list 是否充分——CoverIgnoreAll 的
-	// allow-list 在 checkCronServerListPermission 已经过 Server.HasPermission
-	// 收口；CoverAlertTrigger 在 fire 时再校验。保留这条提前 return 与
-	// 老语义完全一致，避免重复 403。
-	if cover != model.CronCoverAll {
-		return nil
-	}
-	return assertPATCoverFanoutWithinWhitelist(c, ownerUID, coverModeAllMinusDeny, denyServers)
-}
-
-// rejectImplicitServiceCoverForLimitedPAT is the service-monitor analogue.
+// rejectImplicitServiceCoverForLimitedPAT enforces the cover-all PAT guard.
 // ServiceCoverAll treats SkipServers as a deny-set: DispatchTask iterates
 // ServerShared.Range and probes every server owned by the service owner that
 // is NOT marked true in SkipServers. A server-limited PAT must therefore mark
 // every owner-visible server outside its whitelist as skipped.
 //
-// 同样靠 assertPATCoverFanoutWithinWhitelist 落地，与 cron 写侧/运行时入口
-// 共用一条裁决路径。
+// 靠 assertPATCoverFanoutWithinWhitelist 落地，与 service 运行时入口
+// （batchDeleteService）共用一条裁决路径。
 func rejectImplicitServiceCoverForLimitedPAT(c *gin.Context, cover uint8, skipServers map[uint64]bool, ownerUID uint64) error {
 	if cover != model.ServiceCoverAll {
 		return nil
@@ -423,18 +311,6 @@ func skipServersToDenyList(skip map[uint64]bool) []uint64 {
 	return out
 }
 
-// enforcePATCronDispatchScope 是 cron 运行时入口（manualTriggerCron /
-// batchDeleteCron）的 PAT 收口。把 cr.Cover / cr.Servers 翻译成 coverMode
-// 后交给共享底座；语义与写侧 rejectImplicitCoverForLimitedPAT* 严格对齐，
-// 闭合「写时拦下 / 运行时回放同一条规则」的不变量，避免历史脏数据 + 受
-// 限 PAT 形成越权 fan-out。
-func enforcePATCronDispatchScope(c *gin.Context, cr *model.Cron) error {
-	if cr == nil {
-		return nil
-	}
-	return assertPATCoverFanoutWithinWhitelist(c, cr.GetUserID(), cronCoverMode(cr.Cover), cr.Servers)
-}
-
 // enforcePATServiceDispatchScope 是 service monitor 运行时入口
 // （batchDeleteService 等）的 PAT 收口。SkipServers 是 map[uint64]bool，
 // 这里展开成 deny-list 切片喂给共享底座；语义与
@@ -444,24 +320,6 @@ func enforcePATServiceDispatchScope(c *gin.Context, svc *model.Service) error {
 		return nil
 	}
 	return assertPATCoverFanoutWithinWhitelist(c, svc.GetUserID(), serviceCoverMode(svc.Cover), skipServersToDenyList(svc.SkipServers))
-}
-
-// enforcePATTriggerTaskScope 阻止 service:write / alertrule:write 的 PAT 通过绑定
-// trigger task 越权执行 cron。运行时 alertsentinel/servicesentinel 触发
-// CronShared.SendTriggerTasks 时没有 PAT 上下文，CheckPermission 也只校验
-// ownership/白名单而非 scope，所以必须在写侧对 PAT 额外要求 ScopeCronExec。
-func enforcePATTriggerTaskScope(c *gin.Context, failTasks, recoverTasks []uint64) error {
-	if len(failTasks) == 0 && len(recoverTasks) == 0 {
-		return nil
-	}
-	tok := APITokenFromContext(c)
-	if tok == nil {
-		return nil
-	}
-	if !tok.HasScope(model.ScopeCronExec) {
-		return singleton.Localizer.ErrorT("permission denied")
-	}
-	return nil
 }
 
 func userCanViewServer(c *gin.Context, server *model.Server) bool {

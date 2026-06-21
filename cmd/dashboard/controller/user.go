@@ -3,6 +3,7 @@ package controller
 import (
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -211,17 +212,10 @@ func listOnlineUser(c *gin.Context) (*model.Value[[]*model.OnlineUser], error) {
 		offset = 0
 	}
 
-	users := singleton.GetOnlineUsers(limit, offset)
+	all := onlineSessions()
+	users := paginateOnline(all, offset, limit)
 	if !isAdmin {
-		var newUsers []*model.OnlineUser
-		for _, user := range users {
-			newUsers = append(newUsers, &model.OnlineUser{
-				UserID:      user.UserID,
-				IP:          utils.IPDesensitize(user.IP),
-				ConnectedAt: user.ConnectedAt,
-			})
-		}
-		users = newUsers
+		users = desensitizeOnline(users)
 	}
 
 	return &model.Value[[]*model.OnlineUser]{
@@ -229,9 +223,51 @@ func listOnlineUser(c *gin.Context) (*model.Value[[]*model.OnlineUser], error) {
 		Pagination: model.Pagination{
 			Offset: offset,
 			Limit:  limit,
-			Total:  int64(singleton.GetOnlineUserCount()),
+			Total:  int64(len(all)),
 		},
 	}, nil
+}
+
+// onlineSessions 返回有效(未过期未吊销)登录会话,按 IP 去重,空 IP 跳过。
+func onlineSessions() []*model.OnlineUser {
+	var sessions []model.JWTSession
+	singleton.DB.Where("expires_at > ? AND revoked_at IS NULL", time.Now()).
+		Order("created_at ASC").Find(&sessions)
+	seen := make(map[string]bool)
+	out := make([]*model.OnlineUser, 0, len(sessions))
+	for _, s := range sessions {
+		if s.IP == "" || seen[s.IP] {
+			continue
+		}
+		seen[s.IP] = true
+		out = append(out, &model.OnlineUser{UserID: s.UserID, IP: s.IP, ConnectedAt: s.CreatedAt})
+	}
+	return out
+}
+
+// paginateOnline 对会话列表做 offset/limit 切片。
+func paginateOnline(all []*model.OnlineUser, offset, limit int) []*model.OnlineUser {
+	if offset >= len(all) {
+		return nil
+	}
+	end := offset + limit
+	if end > len(all) {
+		end = len(all)
+	}
+	return all[offset:end]
+}
+
+// desensitizeOnline 对非管理员脱敏在线用户 IP。
+func desensitizeOnline(users []*model.OnlineUser) []*model.OnlineUser {
+	out := make([]*model.OnlineUser, 0, len(users))
+	for _, user := range users {
+		out = append(out, &model.OnlineUser{
+			UserID:      user.UserID,
+			IP:          utils.IPDesensitize(user.IP),
+			ConnectedAt: user.ConnectedAt,
+		})
+	}
+	return out
 }
 
 // Batch block online user

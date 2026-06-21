@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
 
 	"github.com/go-viper/mapstructure/v2"
 	kmaps "github.com/knadh/koanf/maps"
@@ -55,22 +54,17 @@ type ConfigDashboard struct {
 	UserTemplate      string `koanf:"user_template" json:"user_template,omitempty"`
 	AdminTemplate     string `koanf:"admin_template" json:"admin_template,omitempty"`
 
+	// Agent 安装脚本地址（留空使用内置默认脚本）
+	InstallScriptLinux   string `koanf:"install_script_linux" json:"install_script_linux,omitempty"`   // Linux/macOS 安装脚本地址
+	InstallScriptWindows string `koanf:"install_script_windows" json:"install_script_windows,omitempty"` // Windows 安装脚本地址
+
 	EnablePlainIPInNotification bool `koanf:"enable_plain_ip_in_notification" json:"enable_plain_ip_in_notification,omitempty"` // 通知信息IP不打码
-
-	EnableMCP bool `koanf:"enable_mcp" json:"enable_mcp,omitempty"` // 是否启用 MCP 入口（默认关闭；启用前请审视 PAT scope/whitelist）
-
-	// GHSA-x6fg-52vr-hj4w：反代部署下 dashboard 的对外域名进程自身看不到，
-	// InstallHost/ListenHost 无法覆盖。运维在此用逗号分隔声明这些对外 host，
-	// 成员便无法注册与之冲突的 NAT 域名抢占路由。
-	ReservedHosts string `koanf:"reserved_hosts" json:"reserved_hosts,omitempty"`
 
 	// IP变更提醒
 	EnableIPChangeNotification  bool   `koanf:"enable_ip_change_notification" json:"enable_ip_change_notification,omitempty"`
 	IPChangeNotificationGroupID uint64 `koanf:"ip_change_notification_group_id" json:"ip_change_notification_group_id"`
 	Cover                       uint8  `koanf:"cover" json:"cover"`                                               // 覆盖范围（0:提醒未被 IgnoredIPNotification 包含的所有服务器; 1:仅提醒被 IgnoredIPNotification 包含的服务器;）
 	IgnoredIPNotification       string `koanf:"ignored_ip_notification" json:"ignored_ip_notification,omitempty"` // 特定服务器IP（多个服务器用逗号分隔）
-
-	DNSServers string `koanf:"dns_servers" json:"dns_servers,omitempty"`
 }
 
 type Config struct {
@@ -93,11 +87,6 @@ type Config struct {
 	jwtSecretFromEnv  bool `koanf:"-" json:"-" yaml:"-"`
 	jwtSecretFromYAML bool `koanf:"-" json:"-" yaml:"-"`
 
-	// mcpEnabled：EnableMCP 的并发安全镜像，kill switch 跨 goroutine 读写走
-	// MCPEnabled()/SetMCPEnabled()。放外层 Config 而非 ConfigDashboard，避免
-	// SettingResponse 按值拷贝 ConfigDashboard 触发 copylocks。
-	mcpEnabled atomic.Bool `koanf:"-" json:"-" yaml:"-"`
-
 	// oauth2 配置
 	Oauth2 map[string]*Oauth2Config `koanf:"oauth2" json:"oauth2,omitempty"`
 
@@ -109,6 +98,9 @@ type Config struct {
 
 	// 内存配置
 	Memory MemoryConf `koanf:"memory" json:"memory"`
+
+	// 数据库配置（type: sqlite/mysql/postgres）
+	Database DatabaseConf `koanf:"database" json:"database"`
 
 	k        *koanf.Koanf `json:"-"`
 	filePath string       `json:"-"`
@@ -135,6 +127,14 @@ type TSDBConf struct {
 type MemoryConf struct {
 	// GoMemLimitMB Go 运行时内存限制(MB)，0 表示不限制
 	GoMemLimitMB int64 `koanf:"go_mem_limit_mb" json:"go_mem_limit_mb,omitempty"`
+}
+
+// DatabaseConf 数据库配置
+type DatabaseConf struct {
+	// Type 数据库类型：sqlite(默认) / mysql / postgres
+	Type string `koanf:"type" json:"type,omitempty"`
+	// DSN 连接串。mysql/postgres 必填；sqlite 留空时回退到 -db 文件路径
+	DSN string `koanf:"dsn" json:"dsn,omitempty"`
 }
 
 // Read 读取配置文件并应用
@@ -230,21 +230,7 @@ func (c *Config) Read(path string, frontendTemplates []FrontendTemplate) error {
 		}
 	}
 
-	c.mcpEnabled.Store(c.EnableMCP)
-
 	return nil
-}
-
-// MCPEnabled 并发安全地读取 MCP kill switch 状态。
-func (c *Config) MCPEnabled() bool {
-	return c.mcpEnabled.Load()
-}
-
-// SetMCPEnabled 并发安全地更新 MCP kill switch 状态。只写 atomic 镜像，不直接
-// 写 EnableMCP 明文字段——后者会与 listConfig 的 *singleton.Conf 整体拷贝读发生
-// 数据竞争。持久化由 save() 在 marshal 前从 atomic 同步明文字段完成。
-func (c *Config) SetMCPEnabled(v bool) {
-	c.mcpEnabled.Store(v)
 }
 
 // Save 保存配置文件
@@ -314,7 +300,6 @@ func (c *Config) patchYAMLField(key string, value any) error {
 }
 
 func (c *Config) save() error {
-	c.EnableMCP = c.mcpEnabled.Load()
 	data, err := yaml.Marshal(c)
 	if err != nil {
 		return err

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -14,47 +13,12 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestValidateRuleAcceptsMemberSelfTriggerTasks(t *testing.T) {
-	ctx := newMemberValidationContext(t)
-	rule := &model.AlertRule{
-		Common:              model.Common{UserID: 200},
-		Name:                "member alert",
-		Rules:               []*model.Rule{{Type: "offline", Duration: 3}},
-		FailTriggerTasks:    []uint64{43},
-		RecoverTriggerTasks: []uint64{43},
-	}
-	assert.NoError(t, validateRule(ctx, rule))
-}
-
-func TestValidateRuleAcceptsAdminCrossUserTriggerTasks(t *testing.T) {
-	ctx := newAdminValidationContext(t)
-	rule := &model.AlertRule{
-		Common:              model.Common{UserID: 1},
-		Name:                "admin alert",
-		Rules:               []*model.Rule{{Type: "offline", Duration: 3}},
-		FailTriggerTasks:    []uint64{43},
-		RecoverTriggerTasks: []uint64{43},
-	}
-	assert.NoError(t, validateRule(ctx, rule))
-}
-
-func TestValidateRuleAcceptsEmptyTriggerTasks(t *testing.T) {
+func TestValidateRuleAcceptsBasicRule(t *testing.T) {
 	ctx := newMemberValidationContext(t)
 	rule := &model.AlertRule{
 		Common: model.Common{UserID: 200},
 		Name:   "member alert",
 		Rules:  []*model.Rule{{Type: "offline", Duration: 3}},
-	}
-	assert.NoError(t, validateRule(ctx, rule))
-}
-
-func TestValidateRuleAcceptsUnknownTriggerTaskID(t *testing.T) {
-	ctx := newMemberValidationContext(t)
-	rule := &model.AlertRule{
-		Common:           model.Common{UserID: 200},
-		Name:             "member alert",
-		Rules:            []*model.Rule{{Type: "offline", Duration: 3}},
-		FailTriggerTasks: []uint64{9999},
 	}
 	assert.NoError(t, validateRule(ctx, rule))
 }
@@ -454,49 +418,3 @@ func TestListNotificationGroupAdminSeesAll(t *testing.T) {
 	assert.ElementsMatch(t, []string{"admin group", "member group"}, names)
 }
 
-func TestBatchMoveServerRejectsNonAdminCrossUser(t *testing.T) {
-	ctx := newMemberValidationContext(t)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/batch-move/server", strings.NewReader(`{"ids":[],"to_user":1}`))
-	ctx.Request.Header.Set("Content-Type", "application/json")
-	_, err := batchMoveServer(ctx)
-	assert.Error(t, err)
-}
-
-func TestBatchMoveServerAllowsMemberSelfMove(t *testing.T) {
-	ctx := newMemberValidationContext(t)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/batch-move/server", strings.NewReader(`{"ids":[],"to_user":200}`))
-	ctx.Request.Header.Set("Content-Type", "application/json")
-	_, err := batchMoveServer(ctx)
-	assert.NoError(t, err)
-}
-
-func TestBatchMoveServerAllowsAdminCrossUser(t *testing.T) {
-	ctx := newAdminValidationContext(t)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/batch-move/server", strings.NewReader(`{"ids":[],"to_user":200}`))
-	ctx.Request.Header.Set("Content-Type", "application/json")
-	_, err := batchMoveServer(ctx)
-	assert.NoError(t, err)
-}
-
-func TestBatchMoveServerMasksForeignServerIDsForMembers(t *testing.T) {
-	ctx := newMemberValidationContext(t)
-	assert.NoError(t, singleton.DB.Create(&model.Server{Common: model.Common{ID: 1, UserID: 1}, Name: "foreign", UUID: "foreign-server"}).Error)
-	singleton.ServerShared = singleton.NewServerClass()
-
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/batch-move/server", strings.NewReader(`{"ids":[1,9999],"to_user":200}`))
-	ctx.Request.Header.Set("Content-Type", "application/json")
-	got, err := batchMoveServer(ctx)
-
-	assert.NoError(t, err)
-	assert.Len(t, got, 2)
-	assert.Equal(t, model.BatchMoveServerResultServerNotFound, got[0].Status)
-	assert.Equal(t, model.BatchMoveServerResultServerNotFound, got[1].Status)
-}
-
-func TestNATRejectsUnknownServerID(t *testing.T) {
-	ctx := newMemberValidationContext(t)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/nat", strings.NewReader(`{"name":"x","domain":"x.example","host":"127.0.0.1:80","server_id":9999}`))
-	ctx.Request.Header.Set("Content-Type", "application/json")
-	_, err := createNAT(ctx)
-	assert.Error(t, err)
-}

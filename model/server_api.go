@@ -21,19 +21,11 @@ type StreamServerData struct {
 }
 
 type ServerForm struct {
-	Name                string              `json:"name,omitempty"`
-	Note                string              `json:"note,omitempty" validate:"optional"`           // 管理员可见备注
-	PublicNote          string              `json:"public_note,omitempty" validate:"optional"`    // 公开备注
-	DisplayIndex        int                 `json:"display_index,omitempty" default:"0"`          // 展示排序，越大越靠前
-	HideForGuest        bool                `json:"hide_for_guest,omitempty" validate:"optional"` // 对游客隐藏
-	EnableDDNS          bool                `json:"enable_ddns,omitempty" validate:"optional"`    // 启用DDNS
-	DDNSProfiles        []uint64            `json:"ddns_profiles,omitempty" validate:"optional"`  // DDNS配置
-	OverrideDDNSDomains map[uint64][]string `json:"override_ddns_domains,omitempty" validate:"optional"`
-}
-
-type ServerConfigForm struct {
-	Servers []uint64 `json:"servers,omitempty"`
-	Config  string   `json:"config,omitempty"`
+	Name         string `json:"name,omitempty"`
+	Note         string `json:"note,omitempty" validate:"optional"`           // 管理员可见备注
+	PublicNote   string `json:"public_note,omitempty" validate:"optional"`    // 公开备注
+	DisplayIndex int    `json:"display_index,omitempty" default:"0"`          // 展示排序，越大越靠前
+	HideForGuest bool   `json:"hide_for_guest,omitempty" validate:"optional"` // 对游客隐藏
 }
 
 type ServerTaskResponse struct {

@@ -1,16 +1,14 @@
 package controller
 
-// Regression tests for the implicit-cover PAT bypass classes.
+// Regression tests for the implicit-cover PAT bypass class on service monitors.
 //
 // Background: ServerShared.CheckPermission iterates an idList and returns true
-// for an empty list — it can only veto explicit IDs. createCron / createService
-// both pipe cf.Servers (cron) and ss.SkipServers (service) through that helper.
-// But under cover=CronCoverAll the cron's Servers slice is a *deny list* (and
-// empty → fan out to every server owned by the user); under cover=ServiceCoverAll
-// the service's SkipServers map is the equivalent deny set. A PAT scoped to
-// server_ids=[1] can therefore craft a "cover all, deny none" config and force
-// dashboard to dispatch cron commands / service probes to servers outside the
-// PAT whitelist.
+// for an empty list — it can only veto explicit IDs. createService pipes
+// ss.SkipServers through that helper. But under cover=ServiceCoverAll the
+// service's SkipServers map is a *deny set* (empty → fan out to every server
+// owned by the user). A PAT scoped to server_ids=[1] can therefore craft a
+// "cover all, deny none" config and force dashboard to dispatch service probes
+// to servers outside the PAT whitelist.
 //
 // These tests are deliberately end-to-end through commonHandler so a future
 // refactor that moves the guard to a different layer still has to satisfy the
@@ -47,18 +45,20 @@ func setupCoverPATFixture(t *testing.T) {
 	originalCache := singleton.Cache
 	originalLoc := singleton.Loc
 	originalLocalizer := singleton.Localizer
-	originalCron := singleton.CronShared
 	originalServer := singleton.ServerShared
+	originalCron := singleton.CronShared
 	originalUserInfo := singleton.UserInfoMap
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.Cron{}, &model.Server{}, &model.User{}, &model.Service{}, &model.NotificationGroup{}, &model.ServiceHistory{}))
+	require.NoError(t, db.AutoMigrate(&model.Server{}, &model.User{}, &model.Service{}, &model.NotificationGroup{}, &model.ServiceHistory{}))
 
 	singleton.DB = db
 	singleton.Loc = time.UTC
 	singleton.Cache = cache.New(time.Minute, time.Minute)
 	singleton.Localizer = i18n.NewLocalizer("en_US", "nezha", "translations", i18n.Translations)
+	// NewServiceSentinel 在构造时会调 CronShared.AddFunc 注册维护/拨测任务，
+	// 必须先装配可用的调度器单例（纯调度器封装）。
 	singleton.CronShared = singleton.NewCronClass()
 
 	originalSentinel := singleton.ServiceSentinelShared
@@ -88,8 +88,8 @@ func setupCoverPATFixture(t *testing.T) {
 		singleton.Cache = originalCache
 		singleton.Loc = originalLoc
 		singleton.Localizer = originalLocalizer
-		singleton.CronShared = originalCron
 		singleton.ServerShared = originalServer
+		singleton.CronShared = originalCron
 		singleton.UserLock.Lock()
 		singleton.UserInfoMap = originalUserInfo
 		singleton.UserLock.Unlock()
@@ -108,74 +108,8 @@ func coverPATRouter(t *testing.T, tok *model.APIToken, handler func(*gin.Context
 		}
 		c.Next()
 	})
-	r.POST("/api/v1/cron", handler)
 	r.POST("/api/v1/service", handler)
 	return r
-}
-
-func TestCreateCron_RejectsCoverAllForServerLimitedPAT(t *testing.T) {
-	setupCoverPATFixture(t)
-
-	tok := &model.APIToken{ID: 17, UserID: 100}
-	tok.SetServerIDs([]uint64{1})
-
-	r := coverPATRouter(t, tok, commonHandler(createCron))
-
-	body, _ := json.Marshal(model.CronForm{
-		TaskType:  model.CronTypeCronTask,
-		Name:      "evil cover-all",
-		Scheduler: "@every 1m",
-		Command:   "echo pwned",
-		Servers:   nil,
-		Cover:     model.CronCoverAll,
-	})
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/cron", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	r.ServeHTTP(w, req)
-
-	success, errMsg := decodeCommonResponseError(t, w.Body.Bytes())
-	assert.False(t, success,
-		"PAT scoped to server_ids=[1] must NOT be able to create a CronCoverAll cron with no Servers — that fans out to server 2 outside the whitelist")
-	assert.Contains(t, errMsg, "permission denied")
-
-	var rows []model.Cron
-	require.NoError(t, singleton.DB.Find(&rows).Error)
-	assert.Empty(t, rows, "no cron row must be persisted when the create call is rejected")
-}
-
-func TestCreateCron_RejectsCoverIgnoreAllWithEmptyServersForLimitedPAT(t *testing.T) {
-	// CoverIgnoreAll + empty Servers is "allow-list of zero" → effectively a
-	// no-op cron. We still reject it because it normalises away the
-	// whitelist hint a curious caller might attempt next ("just flip cover
-	// to All and we'll get fan-out"). Defence-in-depth: any cover-mode that
-	// implies dispatch beyond the literal Servers slice must require the
-	// PAT to cover at least one whitelisted server explicitly.
-	setupCoverPATFixture(t)
-
-	tok := &model.APIToken{ID: 18, UserID: 100}
-	tok.SetServerIDs([]uint64{1})
-
-	r := coverPATRouter(t, tok, commonHandler(createCron))
-
-	body, _ := json.Marshal(model.CronForm{
-		TaskType:  model.CronTypeCronTask,
-		Name:      "ambiguous-cover",
-		Scheduler: "@every 1m",
-		Command:   "echo",
-		Servers:   nil,
-		Cover:     model.CronCoverIgnoreAll,
-	})
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/cron", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	r.ServeHTTP(w, req)
-
-	// Empty Servers + IgnoreAll is the degenerate "matches nothing" case;
-	// it must succeed (it cannot escape) so legitimate API consumers
-	// who serialise a 0-server allow-list aren't blocked.
-	success, errMsg := decodeCommonResponseError(t, w.Body.Bytes())
-	assert.True(t, success, "CoverIgnoreAll with no Servers is a no-op; not a bypass: error=%s", errMsg)
 }
 
 func TestCreateService_AllowsCoverIgnoreAllEmptySkipForLimitedPAT(t *testing.T) {
@@ -240,76 +174,9 @@ func TestCreateService_RejectsCoverAllForServerLimitedPAT(t *testing.T) {
 	assert.Empty(t, rows, "no service row must be persisted when the create call is rejected")
 }
 
-// Threat: PAT server_ids=[1] + Cover=CronCoverAll + Servers=[1] (deny-list)
-// passes the writer-side guard (len(Servers)>0), then CronTrigger iterates all
-// owner servers, skips the whitelisted server 1, and dispatches to server 2 —
-// outside the whitelist. CronTrigger has no PAT context, so the write-time
-// guard is the only enforcement point.
-func TestCreateCron_RejectsCoverAllWithDenyListCoveringOnlyWhitelistedServers(t *testing.T) {
-	setupCoverPATFixture(t)
-
-	tok := &model.APIToken{ID: 31, UserID: 100}
-	tok.SetServerIDs([]uint64{1})
-
-	r := coverPATRouter(t, tok, commonHandler(createCron))
-
-	body, _ := json.Marshal(model.CronForm{
-		TaskType:  model.CronTypeCronTask,
-		Name:      "cover-all deny-only-whitelisted",
-		Scheduler: "@every 1m",
-		Command:   "echo pwned-via-server-2",
-		Servers:   []uint64{1},
-		Cover:     model.CronCoverAll,
-	})
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/cron", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	r.ServeHTTP(w, req)
-
-	success, errMsg := decodeCommonResponseError(t, w.Body.Bytes())
-	assert.False(t, success,
-		"PAT [1] must NOT create a CronCoverAll whose deny-list only contains whitelisted servers; CronTrigger would fan out to server 2")
-	assert.Contains(t, errMsg, "permission denied")
-
-	var rows []model.Cron
-	require.NoError(t, singleton.DB.Find(&rows).Error)
-	assert.Empty(t, rows, "no cron row must be persisted when the create call is rejected")
-}
-
-// Positive case: a server-limited PAT IS allowed to create CronCoverAll when
-// the deny-list already covers every owner-visible server outside its
-// whitelist. Pinning this prevents future "just block all CoverAll for PATs"
-// over-corrections that would break a legitimate "schedule on whitelisted
-// servers only, via deny-list" workflow.
-func TestCreateCron_AllowsCoverAllWhenDenyListCoversAllNonWhitelistedServers(t *testing.T) {
-	setupCoverPATFixture(t)
-
-	tok := &model.APIToken{ID: 41, UserID: 100}
-	tok.SetServerIDs([]uint64{1})
-
-	r := coverPATRouter(t, tok, commonHandler(createCron))
-
-	body, _ := json.Marshal(model.CronForm{
-		TaskType:  model.CronTypeCronTask,
-		Name:      "legit cover-all",
-		Scheduler: "@every 1m",
-		Command:   "echo s1-only",
-		Servers:   []uint64{2},
-		Cover:     model.CronCoverAll,
-	})
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/cron", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	r.ServeHTTP(w, req)
-
-	success, errMsg := decodeCommonResponseError(t, w.Body.Bytes())
-	assert.True(t, success,
-		"CronCoverAll with deny-list covering every non-whitelisted server must succeed for a server-limited PAT: error=%s", errMsg)
-}
-
-// Service-monitor analogue of the cron deny-list bypass: ServiceCoverAll +
-// SkipServers={1:true} passes the writer-side guard (skipCount>0), then
-// DispatchTask probes server 2. Same write-time enforcement requirement.
+// Service-monitor deny-list bypass: ServiceCoverAll + SkipServers={1:true}
+// passes the writer-side guard (skipCount>0), then DispatchTask probes server
+// 2. The write-time guard is the only enforcement point.
 func TestCreateService_RejectsCoverAllWithSkipListCoveringOnlyWhitelistedServers(t *testing.T) {
 	setupCoverPATFixture(t)
 

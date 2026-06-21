@@ -1,0 +1,38 @@
+# 哪吒监控 Dashboard —— Docker Compose 部署
+#
+# 快速开始:
+#   1. mkdir -p data && cp config.yaml.example data/config.yaml   # 按需修改
+#   2. docker compose up -d
+#   3. 浏览器访问 http://<服务器IP>:8008/dashboard,默认管理员见首启日志
+#
+# 仅用内置 sqlite 时,data/config.yaml 也可省略(首启自动生成 bootstrap 配置)。
+services:
+  dashboard:
+    image: ghcr.io/wangdefaa/nezha:latest
+    container_name: nezha-dashboard
+    restart: always
+    ports:
+      - "8008:8008"             # HTTP + gRPC(h2c)复用端口
+    volumes:
+      - ./data:/dashboard/data  # 配置、数据库、时序数据持久化
+    environment:
+      TZ: Asia/Shanghai
+      # 生产建议用环境变量注入 JWT 密钥,使其不写入磁盘:
+      # NZ_JWTSECRETKEY: "替换为足够随机的长字符串"
+    # 改用下方 postgres 时:在 data/config.yaml 设置 database.type=postgres
+    # 及对应 dsn(host=postgres ...),并取消以下注释。
+    # depends_on:
+    #   - postgres
+
+  # ---- 可选:PostgreSQL ----
+  # postgres:
+  #   image: postgres:17-alpine
+  #   container_name: nezha-postgres
+  #   restart: always
+  #   environment:
+  #     POSTGRES_DB: nezha
+  #     POSTGRES_USER: nezha
+  #     POSTGRES_PASSWORD: "替换为强密码"
+  #     TZ: Asia/Shanghai
+  #   volumes:
+  #     - ./pgdata:/var/lib/postgresql/data

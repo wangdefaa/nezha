@@ -1,0 +1,52 @@
+# ===================== 哪吒监控 Dashboard 配置示例 =====================
+# 仅 bootstrap(引导)配置需要写在本文件;站点信息、Agent 连接、通知、
+# OAuth2、安装脚本地址等动态配置会在首次启动时迁移入数据库,之后请在
+# 管理后台「系统设置」中修改,无需再改本文件。
+#
+# 所有字段都可用环境变量覆盖:前缀 NZ_、下划线分层。例如:
+#   NZ_LISTENPORT=8008   NZ_DATABASE_TYPE=postgres   NZ_JWTSECRETKEY=xxx
+# =======================================================================
+
+debug: false                  # 调试模式
+listen_port: 8008             # HTTP + gRPC 复用端口(h2c),Agent 也连此端口
+listen_host: ""               # 监听地址,留空 = 0.0.0.0(全部网卡)
+language: zh_CN               # 界面语言:zh_CN / en_US
+location: Asia/Shanghai       # 时区
+
+# ---- 密钥(以下两项留空都会在首启时自动生成并写回本文件)----
+# Agent 通信密钥;Agent 端 client_secret 必须与此值一致
+agent_secret_key: ""
+# JWT 签名密钥;生产环境建议改用环境变量 NZ_JWTSECRETKEY 注入,使其不落盘
+# jwt_secret_key: ""
+jwt_timeout: 24               # 登录态有效期(小时)
+
+# ---- 数据库 ----
+# type: sqlite(默认,glebarez 纯 Go 实现,免外部依赖)/ mysql / postgres
+database:
+  type: sqlite
+  # sqlite : DSN 留空时使用命令行 -db 指定的文件(默认 data/sqlite.db)
+  # mysql  : user:pass@tcp(127.0.0.1:3306)/nezha?charset=utf8mb4&parseTime=True&loc=Local
+  # postgres: host=127.0.0.1 user=nezha password=secret dbname=nezha port=5432 sslmode=disable TimeZone=Asia/Shanghai
+  dsn: ""
+
+# ---- 反向代理真实 IP ----
+# 经 Nginx/Caddy 等反代时,填写携带真实 IP 的请求头(如 X-Forwarded-For),
+# 否则在线用户、WAF 等功能拿到的都是反代地址。直连可留空(使用 TCP 对端地址)。
+web_real_ip_header: ""        # 面板访问者真实 IP 头
+agent_real_ip_header: ""      # Agent 上报真实 IP 头
+
+# ---- 监控历史时序库 ----
+tsdb:
+  data_path: data/tsdb        # 数据目录
+  retention_days: 30          # 历史保留天数
+
+# ---- HTTPS(可选;通常由反代终结 TLS,此处留空即可)----
+# https:
+#   listen_port: 443
+#   tls_cert_path: /path/fullchain.pem
+#   tls_key_path: /path/privkey.pem
+#   insecure_tls: false
+
+# ---- 运行时内存上限(MB,0 表示不限制)----
+# memory:
+#   go_mem_limit_mb: 0

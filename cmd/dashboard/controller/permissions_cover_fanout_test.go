@@ -124,12 +124,6 @@ func TestAssertPATCoverFanout_PinnedByCaller_PassesAlways(t *testing.T) {
 		"alert-trigger dispatch pins the target server at fire time; assertPATCoverFanoutWithinWhitelist must not pre-judge")
 }
 
-func TestCronCoverMode_KnownValues(t *testing.T) {
-	assert.Equal(t, coverModeAllMinusDeny, cronCoverMode(model.CronCoverAll))
-	assert.Equal(t, coverModeAllowList, cronCoverMode(model.CronCoverIgnoreAll))
-	assert.Equal(t, coverModePinnedByCaller, cronCoverMode(model.CronCoverAlertTrigger))
-}
-
 func TestServiceCoverMode_KnownValues(t *testing.T) {
 	assert.Equal(t, coverModeAllMinusDeny, serviceCoverMode(model.ServiceCoverAll))
 	assert.Equal(t, coverModeAllowList, serviceCoverMode(model.ServiceCoverIgnoreAll))
@@ -141,27 +135,8 @@ func TestSkipServersToDenyList_FiltersOnlyTrue(t *testing.T) {
 		"only true entries are real skips; false-valued entries must not be promoted to deny-list")
 }
 
-// 资源专用入口在底座上薄包装的契约：cron-runtime 与 service-runtime 必须
-// 调底座，因此底座在「不充分 deny-list」时返回的 error 必须穿透到入口。
-func TestEnforcePATCronDispatchScope_RelaysBaseDecision(t *testing.T) {
-	setupCoverFanoutFixture(t)
-	tok := &model.APIToken{ID: 1, UserID: 100}
-	tok.SetServerIDs([]uint64{1})
-	c := ctxWithPAT(t, tok)
-
-	cr := &model.Cron{
-		Common:  model.Common{UserID: 100},
-		Cover:   model.CronCoverAll,
-		Servers: []uint64{1},
-	}
-	err := enforcePATCronDispatchScope(c, cr)
-	assert.Error(t, err, "cover-all cron whose deny-list only covers whitelisted server must be rejected")
-
-	cr.Servers = []uint64{2, 3}
-	require.NoError(t, enforcePATCronDispatchScope(c, cr),
-		"deny-list covering every non-whitelisted owner server must pass")
-}
-
+// 资源专用入口在底座上薄包装的契约：service-runtime 必须调底座，因此底座在
+// 「不充分 deny-list」时返回的 error 必须穿透到入口。
 func TestEnforcePATServiceDispatchScope_RelaysBaseDecision(t *testing.T) {
 	setupCoverFanoutFixture(t)
 	tok := &model.APIToken{ID: 1, UserID: 100}

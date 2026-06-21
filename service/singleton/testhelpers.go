@@ -29,22 +29,6 @@ func (c *ServerClass) InsertForTest(s *model.Server) {
 	c.sortList()
 }
 
-// NewEmptyDDNSClassForTest 构造一个不依赖 DB 的空 DDNSClass，仅用于单测。
-func NewEmptyDDNSClassForTest() *DDNSClass {
-	return &DDNSClass{
-		class: class[uint64, *model.DDNSProfile]{
-			list: make(map[uint64]*model.DDNSProfile),
-		},
-	}
-}
-
-// InsertForTest 把一个 DDNS profile 直接塞进内存表，跳过 DB。
-func (c *DDNSClass) InsertForTest(p *model.DDNSProfile) {
-	c.listMu.Lock()
-	c.list[p.ID] = p
-	c.listMu.Unlock()
-}
-
 // NewEmptyNotificationClassForTest 构造空 NotificationClass。
 func NewEmptyNotificationClassForTest() *NotificationClass {
 	return &NotificationClass{

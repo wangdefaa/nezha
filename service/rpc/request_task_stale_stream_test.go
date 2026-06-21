@@ -16,7 +16,7 @@ import (
 // object keeps reporting the agent as online on a dead stream.
 func TestRequestTaskCleanupDetachesStreamFromCurrentServerAfterEdit(t *testing.T) {
 	reporter := requestTaskSecurityServer(7, 200, "ffffffff-ffff-ffff-ffff-ffffffffffff")
-	setupRequestTaskSecurityFixture(t, []*model.Server{reporter}, nil, map[uint64]model.UserInfo{
+	setupRequestTaskSecurityFixture(t, []*model.Server{reporter}, map[uint64]model.UserInfo{
 		200: {Role: model.RoleMember},
 	}, map[string]uint64{"reporter-secret": 200})
 

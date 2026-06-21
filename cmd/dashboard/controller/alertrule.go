@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"slices"
 	"strconv"
 	"time"
 
@@ -57,8 +56,6 @@ func createAlertRule(c *gin.Context) (uint64, error) {
 	r.UserID = uid
 	r.Name = arf.Name
 	r.Rules = arf.Rules
-	r.FailTriggerTasks = arf.FailTriggerTasks
-	r.RecoverTriggerTasks = arf.RecoverTriggerTasks
 	r.NotificationGroupID = arf.NotificationGroupID
 	enable := arf.Enable
 	r.TriggerMode = arf.TriggerMode
@@ -111,8 +108,6 @@ func updateAlertRule(c *gin.Context) (any, error) {
 
 	r.Name = arf.Name
 	r.Rules = arf.Rules
-	r.FailTriggerTasks = arf.FailTriggerTasks
-	r.RecoverTriggerTasks = arf.RecoverTriggerTasks
 	r.NotificationGroupID = arf.NotificationGroupID
 	enable := arf.Enable
 	r.TriggerMode = arf.TriggerMode
@@ -196,16 +191,6 @@ func validateRule(c *gin.Context, r *model.AlertRule) error {
 		}
 	} else {
 		return singleton.Localizer.ErrorT("need to configure at least a single rule")
-	}
-
-	if !singleton.CronShared.CheckPermission(c, slices.Values(r.FailTriggerTasks)) {
-		return singleton.Localizer.ErrorT("permission denied")
-	}
-	if !singleton.CronShared.CheckPermission(c, slices.Values(r.RecoverTriggerTasks)) {
-		return singleton.Localizer.ErrorT("permission denied")
-	}
-	if err := enforcePATTriggerTaskScope(c, r.FailTriggerTasks, r.RecoverTriggerTasks); err != nil {
-		return err
 	}
 
 	if err := assertOwnsNotificationGroup(c, r.NotificationGroupID); err != nil {

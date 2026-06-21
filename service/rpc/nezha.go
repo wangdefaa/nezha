@@ -6,12 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"sync"
 	"time"
 
-	"github.com/jinzhu/copier"
 	geoipx "github.com/nezhahq/nezha/pkg/geoip"
-	"github.com/nezhahq/nezha/pkg/grpcx"
 	"github.com/nezhahq/nezha/pkg/tsdb"
 
 	"github.com/nezhahq/nezha/model"
@@ -24,16 +21,12 @@ var _ pb.NezhaServiceServer = (*NezhaHandler)(nil)
 var NezhaHandlerSingleton *NezhaHandler
 
 type NezhaHandler struct {
-	Auth          *authHandler
-	ioStreams     map[string]*ioStreamContext
-	ioStreamMutex *sync.RWMutex
+	Auth *authHandler
 }
 
 func NewNezhaHandler() *NezhaHandler {
 	return &NezhaHandler{
-		Auth:          &authHandler{},
-		ioStreamMutex: new(sync.RWMutex),
-		ioStreams:     make(map[string]*ioStreamContext),
+		Auth: &authHandler{},
 	}
 }
 
@@ -75,14 +68,6 @@ func (s *NezhaHandler) RequestTask(stream pb.NezhaService_RequestTaskServer) err
 		return nil
 	}
 	defer clearRequestTaskStream(clientID, server, stream)
-	// If a transfer is mid-flight for this server, the agent has just brought
-	// up a fresh bidi stream — this is the moment to (re)deliver the
-	// ApplyConfig task carrying the new owner's AgentSecret. Pushes from
-	// dashboard mutation time are best-effort; this hook is the reliable
-	// re-delivery point that closes the offline-during-transfer gap.
-	if singleton.ServerTransferShared != nil {
-		singleton.ServerTransferShared.OnAgentReconnect(clientID)
-	}
 	var result *pb.TaskResult
 	for {
 		result, err = stream.Recv()
@@ -90,68 +75,12 @@ func (s *NezhaHandler) RequestTask(stream pb.NezhaService_RequestTaskServer) err
 			log.Printf("NEZHA>> RequestTask error: %v, clientID: %d\n", err, clientID)
 			return err
 		}
-		switch result.GetType() {
-		case model.TaskTypeCommand:
-			// 处理上报的计划任务
-			cr, _ := singleton.CronShared.Get(result.GetId())
-			// 任务结果 ID 来自 agent，必须确认该 cron 本应派发给当前 reporter。
-			if singleton.CanReportCronResult(cr, server) {
-				// 保存当前服务器状态信息
-				var curServer model.Server
-				copier.Copy(&curServer, server)
-				if cr.PushSuccessful && result.GetSuccessful() {
-					singleton.NotificationShared.SendNotification(cr.NotificationGroupID, fmt.Sprintf("[%s] %s, %s\n%s", singleton.Localizer.T("Scheduled Task Executed Successfully"),
-						cr.Name, server.Name, result.GetData()), "", &curServer)
-				}
-				if !result.GetSuccessful() {
-					singleton.NotificationShared.SendNotification(cr.NotificationGroupID, fmt.Sprintf("[%s] %s, %s\n%s", singleton.Localizer.T("Scheduled Task Executed Failed"),
-						cr.Name, server.Name, result.GetData()), "", &curServer)
-				}
-				singleton.DB.Model(cr).Updates(model.Cron{
-					LastExecutedAt: time.Now().Add(time.Second * -1 * time.Duration(result.GetDelay())),
-					LastResult:     result.GetSuccessful(),
-				})
-			}
-		case model.TaskTypeReportConfig:
-			if len(server.ConfigCache) < 1 {
-				if !result.GetSuccessful() {
-					server.ConfigCache <- errors.New(result.Data)
-					continue
-				}
-				server.ConfigCache <- result.Data
-			}
-		case model.TaskTypeServerTransferApply:
-			// Authorization: TaskResult.Id is attacker-controlled. Without
-			// the pending.ID == result.Id check below, agent A could cancel
-			// server B's in-flight transfer by spoofing B's transfer ID —
-			// same class of bug as commit 02129f1 in the cron path.
-			// Successful=true here is best-effort only; the authoritative
-			// verification is the agent's reconnect under the new secret.
-			if singleton.ServerTransferShared == nil {
-				continue
-			}
-			pending, ok := singleton.ServerTransferShared.LookupPending(clientID)
-			if !ok || pending.ID != result.GetId() {
-				log.Printf("NEZHA>> ServerTransferApply result ignored: clientID=%d reported transferID=%d but no matching pending transfer", clientID, result.GetId())
-				continue
-			}
-			if result.GetSuccessful() {
-				continue
-			}
-			if _, err := singleton.ServerTransferShared.MarkFailed(result.GetId(), result.GetData()); err != nil {
-				log.Printf("NEZHA>> ServerTransfer MarkFailed(%d) failed: %v", result.GetId(), err)
-			}
-		default:
-			if model.IsMCPRPCResult(result.GetType()) {
-				deliverMCPResultFromReporter(result, clientID)
-				continue
-			}
-			if model.IsServiceSentinelNeeded(result.GetType()) {
-				singleton.ServiceSentinelShared.Dispatch(singleton.ReportData{
-					Data:     result,
-					Reporter: clientID,
-				})
-			}
+		// 仅拨测类任务（HTTP/TCP/ICMP）需要服务监控；Upgrade/Keepalive 跳过。
+		if model.IsServiceSentinelNeeded(result.GetType()) {
+			singleton.ServiceSentinelShared.Dispatch(singleton.ReportData{
+				Data:     result,
+				Reporter: clientID,
+			})
 		}
 	}
 }
@@ -179,18 +108,6 @@ func (s *NezhaHandler) ReportSystemState(stream pb.NezhaService_ReportSystemStat
 		server.State = &innerState
 
 		if singleton.TSDBEnabled() {
-			maxTemp := 0.0
-			for _, t := range innerState.Temperatures {
-				if t.Temperature > maxTemp {
-					maxTemp = t.Temperature
-				}
-			}
-			maxGPU := 0.0
-			for _, g := range innerState.GPU {
-				if g > maxGPU {
-					maxGPU = g
-				}
-			}
 			if err := singleton.TSDBShared.WriteServerMetrics(&tsdb.ServerMetrics{
 				ServerID:       clientID,
 				Timestamp:      time.Now(),
@@ -208,9 +125,7 @@ func (s *NezhaHandler) ReportSystemState(stream pb.NezhaService_ReportSystemStat
 				TCPConnCount:   innerState.TcpConnCount,
 				UDPConnCount:   innerState.UdpConnCount,
 				ProcessCount:   innerState.ProcessCount,
-				Temperature:    maxTemp,
 				Uptime:         innerState.Uptime,
-				GPU:            maxGPU,
 			}); err != nil {
 				log.Printf("NEZHA>> Failed to write server metrics to TSDB: %v", err)
 			}
@@ -270,75 +185,6 @@ func (s *NezhaHandler) ReportSystemInfo2(c context.Context, r *pb.Host) (*pb.Uin
 	return &pb.Uint64Receipt{Data: singleton.DashboardBootTime}, nil
 }
 
-func (s *NezhaHandler) IOStream(stream pb.NezhaService_IOStreamServer) error {
-	clientID, err := s.Auth.Check(stream.Context())
-	if err != nil {
-		return err
-	}
-	id, err := stream.Recv()
-	if err != nil {
-		return err
-	}
-
-	// ff05ff05 是 Nezha 的魔数，用于标识流 ID。校验由 isValidIOStreamMagic 完成，
-	// 历史 inline 检查曾因 && 短路放过几乎全部非魔数 payload (byte0==0xff 即通过)。
-	if id == nil || !isValidIOStreamMagic(id.Data) {
-		return fmt.Errorf("invalid stream id")
-	}
-
-	streamId := string(id.Data[4:])
-
-	// agent 侧归属校验：只有 createTerminal / createFM / ServeNAT 选定的目标 server
-	// 才能接管该 stream。漏掉这一步等同于把 terminal / fm / NAT 会话向所有合法 agent
-	// 开放（任何获得 streamId 的 agent 都能抢答），构成 session-hijack RCE 中介。
-	// 这是 commit 6661d6a（user 侧归属校验）的对偶补丁。先校验后启 keepalive，
-	// 避免未授权 agent 触发悬空 goroutine 持续向其发心跳。
-	if !s.IsStreamAuthorizedForAgent(streamId, clientID) {
-		return fmt.Errorf("stream not authorized for agent")
-	}
-
-	if _, err := s.GetStream(streamId); err != nil {
-		return err
-	}
-	iw := grpcx.NewIOStreamWrapper(stream)
-
-	// Keepalive MUST go through the wrapper so it shares the same sendMu as
-	// MCP fs.transfer / terminal / fm Writers. Calling stream.Send directly
-	// here used to race those Writers — grpc-go forbids concurrent SendMsg
-	// on the same stream. The wrapper's sendMu is the dashboard-side dual
-	// of agent/cmd/agent/mcp_fs_transfer.go's serialIOStreamSender.
-	keepaliveDone := make(chan struct{})
-	go func() {
-		defer close(keepaliveDone)
-		ticker := time.NewTicker(time.Second * 30)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-iw.Context().Done():
-				return
-			case <-iw.Done():
-				// 业务侧（CloseStream / RevokeStreamsForPurpose）调过
-				// iw.Close()。即便底层 gRPC stream context 尚未取消，也
-				// 必须立刻收手——否则要再等一整个 30s tick，handler 在
-				// iw.Wait() 之后又得多等一拍 keepaliveDone 才能返回。
-				return
-			case <-ticker.C:
-				if err := iw.SendKeepalive(); err != nil {
-					log.Printf("NEZHA>> IOStream keepAlive error: %v\n", err)
-					return
-				}
-			}
-		}
-	}()
-
-	if err := s.AgentConnected(streamId, iw); err != nil {
-		return err
-	}
-	iw.Wait()
-	<-keepaliveDone
-	return nil
-}
-
 func (s *NezhaHandler) ReportGeoIP(c context.Context, r *pb.GeoIP) (*pb.GeoIP, error) {
 	var clientID uint64
 	var err error
@@ -362,17 +208,6 @@ func (s *NezhaHandler) ReportGeoIP(c context.Context, r *pb.GeoIP) (*pb.GeoIP, e
 	server, ok := singleton.ServerShared.Get(clientID)
 	if !ok || server == nil {
 		return nil, fmt.Errorf("server not found")
-	}
-
-	// 检查并更新DDNS
-	if server.EnableDDNS && joinedIP != "" &&
-		(server.GeoIP == nil || server.GeoIP.IP != geoip.IP) {
-		ipv4 := geoip.IP.IPv4Addr
-		ipv6 := geoip.IP.IPv6Addr
-
-		if err := singleton.ServerShared.UpdateDDNS(server, &model.IP{IPv4Addr: ipv4, IPv6Addr: ipv6}); err != nil {
-			log.Printf("NEZHA>> Failed to update DDNS for server %d: %v", err, server.ID)
-		}
 	}
 
 	// 发送IP变动通知

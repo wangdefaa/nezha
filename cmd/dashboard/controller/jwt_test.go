@@ -84,35 +84,6 @@ func TestIPBinding(t *testing.T) {
 	})
 }
 
-func TestValidateRuleRejectsForeignTriggerTasks(t *testing.T) {
-	ctx := newMemberValidationContext(t)
-
-	alertRule := &model.AlertRule{
-		Common:              model.Common{UserID: 200},
-		Name:                "member alert",
-		Rules:               []*model.Rule{{Type: "offline", Duration: 3}},
-		FailTriggerTasks:    []uint64{42},
-		RecoverTriggerTasks: []uint64{42},
-	}
-
-	assert.Error(t, validateRule(ctx, alertRule))
-}
-
-func TestValidateServersRejectsForeignTriggerTasks(t *testing.T) {
-	ctx := newMemberValidationContext(t)
-
-	service := &model.Service{
-		Common:              model.Common{UserID: 200},
-		Name:                "member service",
-		EnableTriggerTask:   true,
-		FailTriggerTasks:    []uint64{42},
-		RecoverTriggerTasks: []uint64{42},
-		SkipServers:         map[uint64]bool{},
-	}
-
-	assert.Error(t, validateServers(ctx, service))
-}
-
 func newMemberValidationContext(t *testing.T) *gin.Context {
 	t.Helper()
 	return newValidationContext(t, 200, model.RoleMember)
@@ -136,27 +107,12 @@ func newValidationContext(t *testing.T, userID uint64, role model.Role) *gin.Con
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	assert.NoError(t, db.AutoMigrate(
-		&model.Cron{},
 		&model.Server{},
 		&model.NotificationGroup{},
 		&model.NotificationGroupNotification{},
 		&model.ServerGroup{},
 		&model.ServerGroupServer{},
 	))
-	assert.NoError(t, db.Create(&model.Cron{
-		Common:   model.Common{ID: 42, UserID: 1},
-		Name:     "foreign trigger task",
-		Command:  "admin-maintenance",
-		TaskType: model.CronTypeTriggerTask,
-		Cover:    model.CronCoverAlertTrigger,
-	}).Error)
-	assert.NoError(t, db.Create(&model.Cron{
-		Common:   model.Common{ID: 43, UserID: 200},
-		Name:     "member trigger task",
-		Command:  "member-task",
-		TaskType: model.CronTypeTriggerTask,
-		Cover:    model.CronCoverAlertTrigger,
-	}).Error)
 	assert.NoError(t, db.Create(&model.NotificationGroup{
 		Common: model.Common{ID: 7, UserID: 1},
 		Name:   "admin group",
@@ -169,6 +125,9 @@ func newValidationContext(t *testing.T, userID uint64, role model.Role) *gin.Con
 	singleton.DB = db
 	singleton.Loc = time.Local
 	singleton.Localizer = i18n.NewLocalizer("en_US", "nezha", "translations", i18n.Translations)
+	// 部分用例（TestShowServiceFiltersCycleTransferStatsLikeServerList）会调
+	// NewServiceSentinel，后者在构造时依赖 CronShared.AddFunc 注册维护/拨测任务，
+	// 因此这里必须装配一个可用的调度器单例（纯调度器封装，无 cron 业务）。
 	singleton.CronShared = singleton.NewCronClass()
 	singleton.ServerShared = singleton.NewServerClass()
 	singleton.UserLock.Lock()

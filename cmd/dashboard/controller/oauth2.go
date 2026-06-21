@@ -54,7 +54,13 @@ func oauth2redirect(c *gin.Context) (*model.Oauth2LoginResponse, error) {
 		return nil, singleton.Localizer.ErrorT("provider is required")
 	}
 
-	rTypeInt, err := strconv.ParseUint(c.Query("type"), 10, 8)
+	// type 省略时默认 1(登录),与 swagger 注释 default(1) 一致:
+	// 前端发起 OAuth2 登录不带该参数,空串会让 ParseUint 报错。
+	rTypeStr := c.Query("type")
+	if rTypeStr == "" {
+		rTypeStr = "1"
+	}
+	rTypeInt, err := strconv.ParseUint(rTypeStr, 10, 8)
 	if err != nil {
 		return nil, err
 	}

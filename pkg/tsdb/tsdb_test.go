@@ -96,9 +96,7 @@ func TestTSDB_WriteServerMetrics(t *testing.T) {
 		TCPConnCount:   100,
 		UDPConnCount:   50,
 		ProcessCount:   200,
-		Temperature:    65.5,
 		Uptime:         86400,
-		GPU:            30.0,
 	}
 
 	err = db.WriteServerMetrics(metrics)

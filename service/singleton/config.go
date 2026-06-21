@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 
+	"gorm.io/gorm"
+
 	"github.com/nezhahq/nezha/model"
 	"github.com/nezhahq/nezha/pkg/utils"
 )
@@ -35,8 +37,7 @@ func InitConfigFromPath(path string) error {
 		log.Printf("NEZHA>> Rotated jwt_secret_key for dashboard version %s", Version)
 	}
 
-	Conf.updateIgnoredIPNotificationID()
-	Conf.Oauth2Providers = utils.MapKeysToSlice(Conf.Oauth2)
+	Conf.refreshDerived()
 	return nil
 }
 
@@ -58,4 +59,25 @@ func (c *ConfigClass) updateIgnoredIPNotificationID() {
 			c.IgnoredIPNotificationServerIDs[id] = true
 		}
 	}
+}
+
+// refreshDerived 刷新派生缓存：oauth2 名单与忽略IP集合。
+func (c *ConfigClass) refreshDerived() {
+	c.Oauth2Providers = utils.MapKeysToSlice(c.Oauth2)
+	c.updateIgnoredIPNotificationID()
+}
+
+// LoadDynamicFromDB 加载动态配置后刷新派生缓存（覆盖嵌入方法）。
+func (c *ConfigClass) LoadDynamicFromDB(db *gorm.DB) error {
+	if err := c.Config.LoadDynamicFromDB(db); err != nil {
+		return err
+	}
+	c.refreshDerived()
+	return nil
+}
+
+// SaveDynamicToDB 持久化动态配置前刷新派生缓存（覆盖嵌入方法）。
+func (c *ConfigClass) SaveDynamicToDB(db *gorm.DB) error {
+	c.refreshDerived()
+	return c.Config.SaveDynamicToDB(db)
 }

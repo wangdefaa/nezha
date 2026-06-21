@@ -83,18 +83,14 @@ func createAPIToken(c *gin.Context) (*model.APITokenCreateResponse, error) {
 		if s == "" {
 			continue
 		}
-		normalized, ok := model.NormalizeIncomingScope(s)
-		if !ok {
+		if !slices.Contains(allowed, s) {
 			return nil, errors.New("unknown scope: " + s)
 		}
-		if !slices.Contains(allowed, normalized) {
-			return nil, errors.New("unknown scope: " + s)
-		}
-		if _, dup := seen[normalized]; dup {
+		if _, dup := seen[s]; dup {
 			continue
 		}
-		seen[normalized] = struct{}{}
-		cleaned = append(cleaned, normalized)
+		seen[s] = struct{}{}
+		cleaned = append(cleaned, s)
 	}
 	if len(cleaned) == 0 {
 		return nil, errors.New("at least one scope required")

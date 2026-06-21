@@ -12,26 +12,17 @@ import (
 
 // Scope 命名规范（唯一一套）：nezha:{resource}:{verb}
 //
-//   - resource: inventory / server / service / alertrule / cron / ddns / nat /
-//     notification / notification-group / transfer / admin
+//   - resource: inventory / server / service / alertrule / cron /
+//     notification / notification-group / admin
 //   - verb: read / write / delete / exec
 //
 // `*` 通配在 resource 或 verb 位均可：
 //   - nezha:server:* 给定资源的所有动作
 //   - nezha:* admin-only 全权
 //
-// inventory 与 server 已拆开：inventory 管“能看到/能删哪些机器”——`server.list`
-// MCP tool、`GET /api/v1/server`、`/server-group`、batch-delete server/group 都用
-// nezha:inventory:{read,delete}；server 管对已知机器的运行态操作（server.get、
-// exec、文件读写、编辑配置、metrics）。同一 scope 同时管 MCP tool 和 REST endpoint。
-//
-// 历史上还有 mcp:* 一套，会被 HasScope 通过别名映射到 nezha:server:* 子集。
-// 由于 HasScope 同时服务 MCP tool 调度与 REST scope middleware，旧 mcp:fs:write
-// 等会静默扩到所有 nezha:server:write REST 路由——这是命名分裂带来的提权漏洞。
-// 现在 mcp:* 不再在运行时被识别；createAPIToken 入口对老调用方做一次性归一化：
-// 只读/exec 类（mcp:fs:read、mcp:server:read、mcp:server:exec）映射到对应
-// nezha:* read/exec scope；mcp:fs:write、mcp:fs:delete、mcp:* 一律拒签。
-// 数据库已有的危险旧 scope 由 MigrateLegacyMCPScopes 在启动迁移阶段清理。
+// inventory 与 server 已拆开：inventory 管“能看到/能删哪些机器”——`GET /api/v1/server`、
+// `/server-group`、batch-delete server/group 都用 nezha:inventory:{read,delete}；
+// server 管对已知机器的运行态操作（exec、编辑配置、metrics）。
 const (
 	ScopeNezhaAll = "nezha:*"
 
@@ -56,19 +47,6 @@ const (
 	ScopeAlertRuleWrite  = "nezha:alertrule:write"
 	ScopeAlertRuleDelete = "nezha:alertrule:delete"
 
-	ScopeCronRead   = "nezha:cron:read"
-	ScopeCronWrite  = "nezha:cron:write"
-	ScopeCronDelete = "nezha:cron:delete"
-	ScopeCronExec   = "nezha:cron:exec"
-
-	ScopeDDNSRead   = "nezha:ddns:read"
-	ScopeDDNSWrite  = "nezha:ddns:write"
-	ScopeDDNSDelete = "nezha:ddns:delete"
-
-	ScopeNATRead   = "nezha:nat:read"
-	ScopeNATWrite  = "nezha:nat:write"
-	ScopeNATDelete = "nezha:nat:delete"
-
 	ScopeNotificationRead   = "nezha:notification:read"
 	ScopeNotificationWrite  = "nezha:notification:write"
 	ScopeNotificationDelete = "nezha:notification:delete"
@@ -76,10 +54,6 @@ const (
 	ScopeNotificationGroupRead   = "nezha:notification-group:read"
 	ScopeNotificationGroupWrite  = "nezha:notification-group:write" // #nosec G101 -- scope identifier, not a credential
 	ScopeNotificationGroupDelete = "nezha:notification-group:delete"
-
-	ScopeTransferRead   = "nezha:transfer:read"
-	ScopeTransferWrite  = "nezha:transfer:write"
-	ScopeTransferDelete = "nezha:transfer:delete"
 
 	ScopeAdminAll = "nezha:admin:*"
 )
@@ -89,51 +63,23 @@ var AllScopes = []string{
 	ScopeServerRead, ScopeServerWrite, ScopeServerDelete, ScopeServerExec,
 	ScopeServiceRead, ScopeServiceWrite, ScopeServiceDelete,
 	ScopeAlertRuleRead, ScopeAlertRuleWrite, ScopeAlertRuleDelete,
-	ScopeCronRead, ScopeCronWrite, ScopeCronDelete, ScopeCronExec,
-	ScopeDDNSRead, ScopeDDNSWrite, ScopeDDNSDelete,
-	ScopeNATRead, ScopeNATWrite, ScopeNATDelete,
 	ScopeNotificationRead, ScopeNotificationWrite, ScopeNotificationDelete,
 	ScopeNotificationGroupRead, ScopeNotificationGroupWrite, ScopeNotificationGroupDelete,
-	ScopeTransferRead, ScopeTransferWrite, ScopeTransferDelete,
 
 	"nezha:inventory:*",
 	"nezha:server:*",
 	"nezha:service:*",
 	"nezha:alertrule:*",
-	"nezha:cron:*",
-	"nezha:ddns:*",
-	"nezha:nat:*",
 	"nezha:notification:*",
 	"nezha:notification-group:*",
-	"nezha:transfer:*",
 }
 
 var AdminOnlyScopes = []string{ScopeNezhaAll, ScopeAdminAll}
 
-// legacyMCPReadOnlyRewrite 列出仍允许 createAPIToken 入口重写为 nezha:* 的旧 scope。
-// 只有只读/exec 类被接受；write/delete/wildcard 一律拒签——保留映射等于扩权。
-var legacyMCPReadOnlyRewrite = map[string]string{
-	"mcp:server:read": ScopeServerRead,
-	"mcp:server:exec": ScopeServerExec,
-	"mcp:fs:read":     ScopeServerRead,
-}
-
-// NormalizeIncomingScope 把入参里的旧 mcp:* scope 重写到 nezha:* 命名。
-// 第二个返回值表示该 scope 是否被允许（false = 危险旧 scope，调用方应拒签）。
-func NormalizeIncomingScope(s string) (string, bool) {
-	if mapped, ok := legacyMCPReadOnlyRewrite[s]; ok {
-		return mapped, true
-	}
-	if strings.HasPrefix(s, "mcp:") {
-		return s, false
-	}
-	return s, true
-}
-
 // APITokenPrefix 是明文 token 的人类可识别前缀。`nzp_` = nezha personal access token。
 const APITokenPrefix = "nzp_"
 
-// APIToken 是用户用于程序化访问的长期凭证。MCP 接入点 /mcp 用它做鉴权。
+// APIToken 是用户用于程序化访问的长期凭证。
 // 双层鉴权：闸 1 用 UserID 复用 Server.HasPermission；闸 2 用 Scopes / ServerIDs。
 type APIToken struct {
 	ID         uint64     `gorm:"primaryKey" json:"id,omitempty"`
@@ -222,9 +168,6 @@ func (t *APIToken) SetServerIDs(ids []uint64) {
 //   - nezha:* 覆盖整个 nezha 命名空间
 //   - 资源级通配：nezha:server:* 匹配所有 nezha:server:read/write/delete/exec
 //   - 精确匹配
-//
-// 不再做 mcp:* 别名展开；任何遗留的 mcp:* scope 都视为无效（已被
-// MigrateLegacyMCPScopes 在启动迁移阶段清掉；运行时再遇到当作无权处理）。
 func (t *APIToken) HasScope(scope string) bool {
 	for _, s := range t.Scopes() {
 		if scopeMatches(s, scope) {
@@ -270,59 +213,6 @@ func (t *APIToken) BeforeCreate(tx *gorm.DB) error {
 		return gorm.ErrInvalidData
 	}
 	return nil
-}
-
-// MigrateLegacyMCPScopes 把数据库里残留的 mcp:* scope 一次性归一化：
-//   - 只读/exec 类映射到对应 nezha:* read/exec scope；
-//   - mcp:fs:write / mcp:fs:delete / mcp:* 会被剥掉（不再赋予 REST write/delete），
-//     若 token 因此 scope 列表清空则整体删除——避免出现一张 0 scope 但仍能命中
-//     auth middleware 的 PAT。
-//
-// 返回 (rewrittenTokens, deletedTokens, err)。生产路径在启动时调用一次；
-// 测试也会用它构造 fixture。
-func MigrateLegacyMCPScopes(db *gorm.DB) (int, int, error) {
-	if db == nil {
-		return 0, 0, nil
-	}
-	var rows []APIToken
-	if err := db.Where("scopes_csv LIKE ?", "%mcp:%").Find(&rows).Error; err != nil {
-		return 0, 0, err
-	}
-	rewritten, deleted := 0, 0
-	for i := range rows {
-		tok := &rows[i]
-		old := tok.Scopes()
-		next := make([]string, 0, len(old))
-		seen := make(map[string]struct{}, len(old))
-		for _, s := range old {
-			mapped, ok := NormalizeIncomingScope(s)
-			if !ok {
-				continue
-			}
-			if _, dup := seen[mapped]; dup {
-				continue
-			}
-			seen[mapped] = struct{}{}
-			next = append(next, mapped)
-		}
-		if len(next) == 0 {
-			if err := db.Delete(&APIToken{}, tok.ID).Error; err != nil {
-				return rewritten, deleted, err
-			}
-			deleted++
-			continue
-		}
-		joined := strings.Join(next, ",")
-		if joined == tok.ScopesCSV {
-			continue
-		}
-		if err := db.Model(&APIToken{}).Where("id = ?", tok.ID).
-			Update("scopes_csv", joined).Error; err != nil {
-			return rewritten, deleted, err
-		}
-		rewritten++
-	}
-	return rewritten, deleted, nil
 }
 
 // formatUint —— 小工具，避免引入 strconv。
