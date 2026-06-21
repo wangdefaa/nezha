@@ -41,9 +41,10 @@ func NewEmptyNotificationClassForTest() *NotificationClass {
 	}
 }
 
-// InsertForTest 把一个 Notification 直接塞进内存表。
+// InsertForTest 把一个 Notification 直接塞进内存表与排序快照。
 func (c *NotificationClass) InsertForTest(n *model.Notification) {
 	c.listMu.Lock()
 	c.list[n.ID] = n
 	c.listMu.Unlock()
+	c.sortList()
 }
