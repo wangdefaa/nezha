@@ -318,6 +318,16 @@ func getUid(c *gin.Context) uint64 {
 	return user.ID
 }
 
+// setFrontendCacheHeader 控制前端静态资源缓存：带内容哈希的构建产物（assets/）长缓存且 immutable；
+// 其余（index.html、SPA fallback、logo 等）一律 no-cache，确保主题换 hash 后刷新即取最新引用，避免白屏。
+func setFrontendCacheHeader(c *gin.Context, name string) {
+	if strings.HasPrefix(name, "assets/") {
+		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		return
+	}
+	c.Header("Cache-Control", "no-cache")
+}
+
 func fallbackToFrontend(frontendDist fs.FS) func(*gin.Context) {
 	serveFile := func(c *gin.Context, name string, file fs.File, customStatusCode int) bool {
 		defer file.Close()
@@ -332,6 +342,7 @@ func fallbackToFrontend(frontendDist fs.FS) func(*gin.Context) {
 		if !ok {
 			return false
 		}
+		setFrontendCacheHeader(c, name)
 		http.ServeContent(utils.NewGinCustomWriter(c, customStatusCode), c.Request, name, fileStat.ModTime(), readSeeker)
 		return true
 	}
