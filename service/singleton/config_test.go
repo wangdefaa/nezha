@@ -22,13 +22,13 @@ func TestInitConfigFromPathRotatesJWTSecretKey(t *testing.T) {
 
 	originalConf := Conf
 	originalVersion := Version
-	originalTemplates := FrontendTemplates
+	originalTemplates := builtinTemplates
 	Version = "v2.0.13"
-	FrontendTemplates = nil
+	builtinTemplates = nil
 	t.Cleanup(func() {
 		Conf = originalConf
 		Version = originalVersion
-		FrontendTemplates = originalTemplates
+		builtinTemplates = originalTemplates
 	})
 
 	if err := InitConfigFromPath(file.Name()); err != nil {

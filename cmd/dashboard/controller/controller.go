@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -28,6 +29,7 @@ import (
 func ServeWeb(frontendDist fs.FS) http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
+	r.MaxMultipartMemory = 64 << 20 // 主题 zip 上传缓冲上限
 
 	if singleton.Conf.Debug {
 		gin.SetMode(gin.DebugMode)
@@ -142,6 +144,14 @@ func routers(r *gin.Engine, frontendDist fs.FS) {
 	auth.POST("/online-user/batch-block", restScopeMiddleware(model.ScopeAdminAll), adminHandler(batchBlockOnlineUser))
 	auth.PATCH("/setting", restScopeMiddleware(model.ScopeAdminAll), adminHandler(updateConfig))
 	auth.POST("/maintenance", restScopeMiddleware(model.ScopeAdminAll), adminHandler(runMaintenance))
+
+	// 主题管理（访客展示页主题入库解耦）。upload 为 multipart，github 为 JSON。
+	auth.GET("/theme", restScopeMiddleware(model.ScopeAdminAll), adminHandler(listTheme))
+	auth.POST("/theme/upload", restScopeMiddleware(model.ScopeAdminAll), adminHandler(uploadTheme))
+	auth.POST("/theme/github", restScopeMiddleware(model.ScopeAdminAll), adminHandler(createGithubTheme))
+	auth.POST("/theme/:id/refresh", restScopeMiddleware(model.ScopeAdminAll), adminHandler(refreshTheme))
+	auth.POST("/theme/:id/apply", restScopeMiddleware(model.ScopeAdminAll), adminHandler(applyTheme))
+	auth.POST("/batch-delete/theme", restScopeMiddleware(model.ScopeAdminAll), adminHandler(batchDeleteTheme))
 
 	r.NoRoute(fallbackToFrontend(frontendDist))
 }
@@ -326,18 +336,38 @@ func fallbackToFrontend(frontendDist fs.FS) func(*gin.Context) {
 		return true
 	}
 
+	// tryDiskRoot 在受限目录 dirRoot 内查找并返回 filePath（os.Root 把路径限制在 root 内，防 URL 穿越）。
+	tryDiskRoot := func(c *gin.Context, dirRoot, filePath string, code int) bool {
+		root, err := os.OpenRoot(dirRoot)
+		if err != nil {
+			return false
+		}
+		defer root.Close()
+		file, err := root.Open(filePath)
+		if err != nil {
+			return false
+		}
+		return serveFile(c, filePath, file, code)
+	}
+
 	checkLocalFileOrFs := func(c *gin.Context, frontendFS fs.FS, templateRoot, filePath string, customStatusCode int) bool {
+		// 查找次序：磁盘 <ThemeDir>/<path>（自定义/更新版）→ 内置 cwd 相对目录 → 内置 embed（出厂兜底）。
+		src, known := singleton.ThemeSourceOf(templateRoot)
+		builtin := !known || src == model.ThemeSourceBuiltin
+
 		if filePath != "" {
-			localRoot, err := os.OpenRoot(templateRoot)
-			if err == nil {
-				defer localRoot.Close()
-				// URL paths must stay inside the selected template root; never join them against the process cwd.
-				if file, err := localRoot.Open(filePath); err == nil && serveFile(c, filePath, file, customStatusCode) {
-					return true
-				}
+			if singleton.ThemeDir != "" &&
+				tryDiskRoot(c, filepath.Join(singleton.ThemeDir, templateRoot), filePath, customStatusCode) {
+				return true
+			}
+			if builtin && tryDiskRoot(c, templateRoot, filePath, customStatusCode) {
+				return true
 			}
 		}
 
+		if !builtin {
+			return false // 自定义主题无 embed 兜底
+		}
 		if !fs.ValidPath(filePath) {
 			return false
 		}
@@ -349,10 +379,7 @@ func fallbackToFrontend(frontendDist fs.FS) func(*gin.Context) {
 		if err != nil {
 			return false
 		}
-		if serveFile(c, filePath, file, customStatusCode) {
-			return true
-		}
-		return false
+		return serveFile(c, filePath, file, customStatusCode)
 	}
 
 	frontendPageUrlRegistry := []*regexp.Regexp{
@@ -373,6 +400,7 @@ func fallbackToFrontend(frontendDist fs.FS) func(*gin.Context) {
 		regexp.MustCompile(`^/dashboard/settings/online-user$`),
 		regexp.MustCompile(`^/dashboard/settings/waf$`),
 		regexp.MustCompile(`^/dashboard/settings/api-tokens$`),
+		regexp.MustCompile(`^/dashboard/settings/theme$`),
 		// 注意：这里的白名单决定哪些 URL 走 index.html fallback；漏一条就会把
 		// 直接刷新该页面变成 404（HTTP 状态码层面，body 仍是 index.html，所以
 		// 浏览器内 SPA 看起来正常，但 monitoring / 链接预览会以为站点挂了）。
@@ -407,17 +435,29 @@ func fallbackToFrontend(frontendDist fs.FS) func(*gin.Context) {
 			if checkLocalFileOrFs(c, frontendDist, singleton.Conf.AdminTemplate, stripPath, http.StatusOK) {
 				return
 			}
-			if !checkLocalFileOrFs(c, frontendDist, singleton.Conf.AdminTemplate, "index.html", fallbackStatusCode) {
-				c.JSON(http.StatusNotFound, newErrorResponse(errors.New("404 Not Found")))
+			if checkLocalFileOrFs(c, frontendDist, singleton.Conf.AdminTemplate, "index.html", fallbackStatusCode) {
+				return
 			}
+			// 兜底：当前管理端主题缺文件时回退内置 admin-dist，避免整站 404。
+			if singleton.Conf.AdminTemplate != "admin-dist" &&
+				checkLocalFileOrFs(c, frontendDist, "admin-dist", "index.html", fallbackStatusCode) {
+				return
+			}
+			c.JSON(http.StatusNotFound, newErrorResponse(errors.New("404 Not Found")))
 			return
 		}
 		stripPath := strings.TrimPrefix(c.Request.URL.Path, "/")
 		if checkLocalFileOrFs(c, frontendDist, singleton.Conf.UserTemplate, stripPath, http.StatusOK) {
 			return
 		}
-		if !checkLocalFileOrFs(c, frontendDist, singleton.Conf.UserTemplate, "index.html", fallbackStatusCode) {
-			c.JSON(http.StatusNotFound, newErrorResponse(errors.New("404 Not Found")))
+		if checkLocalFileOrFs(c, frontendDist, singleton.Conf.UserTemplate, "index.html", fallbackStatusCode) {
+			return
 		}
+		// 兜底：当前访客主题缺文件时回退内置 user-dist，避免整站 404。
+		if singleton.Conf.UserTemplate != "user-dist" &&
+			checkLocalFileOrFs(c, frontendDist, "user-dist", "index.html", fallbackStatusCode) {
+			return
+		}
+		c.JSON(http.StatusNotFound, newErrorResponse(errors.New("404 Not Found")))
 	}
 }

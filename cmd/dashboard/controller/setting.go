@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"errors"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -39,7 +38,7 @@ func listConfig(c *gin.Context) (*model.SettingResponse, error) {
 			Oauth2:                         config.Oauth2,
 		},
 		Version:           singleton.Version,
-		FrontendTemplates: singleton.FrontendTemplates,
+		FrontendTemplates: singleton.GetFrontendTemplates(),
 		TSDBEnabled:       singleton.TSDBEnabled(),
 	}
 
@@ -79,19 +78,6 @@ func updateConfig(c *gin.Context) (any, error) {
 	if err := c.ShouldBindJSON(&sf); err != nil {
 		return nil, err
 	}
-	var userTemplateValid bool
-	for _, v := range singleton.FrontendTemplates {
-		if !userTemplateValid && v.Path == sf.UserTemplate && !v.IsAdmin {
-			userTemplateValid = true
-		}
-		if userTemplateValid {
-			break
-		}
-	}
-	if !userTemplateValid {
-		return nil, errors.New("invalid user template")
-	}
-
 	singleton.Conf.Language = strings.ReplaceAll(sf.Language, "-", "_")
 
 	singleton.Conf.EnableIPChangeNotification = sf.EnableIPChangeNotification
@@ -107,7 +93,7 @@ func updateConfig(c *gin.Context) (any, error) {
 	singleton.Conf.WebRealIPHeader = sf.WebRealIPHeader
 	singleton.Conf.AgentRealIPHeader = sf.AgentRealIPHeader
 	singleton.Conf.AgentTLS = sf.AgentTLS
-	singleton.Conf.UserTemplate = sf.UserTemplate
+	// user_template 由「主题管理」页的 apply 专管，settings 保存不再覆盖（避免覆写主题切换）。
 	singleton.Conf.InstallScriptLinux = sf.InstallScriptLinux
 	singleton.Conf.InstallScriptWindows = sf.InstallScriptWindows
 	if sf.Oauth2 != nil {

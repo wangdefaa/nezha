@@ -25,7 +25,7 @@ func InitConfigFromPath(path string) error {
 	Conf = &ConfigClass{
 		Config: &model.Config{},
 	}
-	err := Conf.Read(path, FrontendTemplates)
+	err := Conf.Read(path, builtinTemplates)
 	if err != nil {
 		return err
 	}

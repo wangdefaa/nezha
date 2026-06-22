@@ -33,13 +33,15 @@ type Setting struct {
 }
 
 type FrontendTemplate struct {
-	Path       string `json:"path,omitempty"`
-	Name       string `json:"name,omitempty"`
-	Repository string `json:"repository,omitempty"`
-	Author     string `json:"author,omitempty"`
-	Version    string `json:"version,omitempty"`
-	IsAdmin    bool   `json:"is_admin,omitempty"`
-	IsOfficial bool   `json:"is_official,omitempty"`
+	Path         string `json:"path,omitempty"`
+	Name         string `json:"name,omitempty"`
+	Repository   string `json:"repository,omitempty"`
+	Author       string `json:"author,omitempty"`
+	Version      string `json:"version,omitempty"`
+	GithubRepo   string `json:"github_repo,omitempty"`   // 内置主题的 GitHub 来源（owner/repo），用于「拉取最新」
+	ReleaseAsset string `json:"release_asset,omitempty"` // release 资产文件名（.zip）
+	IsAdmin      bool   `json:"is_admin,omitempty"`
+	IsOfficial   bool   `json:"is_official,omitempty"`
 }
 
 type SettingResponse struct {

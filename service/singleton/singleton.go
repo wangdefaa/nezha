@@ -6,6 +6,8 @@ import (
 	"iter"
 	"log"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"time"
@@ -28,7 +30,6 @@ var (
 	Cache             *cache.Cache
 	DB                *gorm.DB
 	Loc               *time.Location
-	FrontendTemplates []model.FrontendTemplate
 	DashboardBootTime = uint64(time.Now().Unix())
 
 	ServerShared          *ServerClass
@@ -63,17 +64,17 @@ func LoadSingleton(bus chan<- *model.Service) (err error) {
 	return
 }
 
-// InitFrontendTemplates 从内置文件中加载FrontendTemplates
+// InitFrontendTemplates 从内置文件加载 builtinTemplates（启动期兜底校验 + 首启 seed 源）。
+// 运行期权威清单由 themes 表经 ReloadThemes 提供，见 theme.go。
 func InitFrontendTemplates() error {
-	err := yaml.Unmarshal(frontendTemplatesYAML, &FrontendTemplates)
-	if err != nil {
-		return err
-	}
-	return nil
+	return yaml.Unmarshal(frontendTemplatesYAML, &builtinTemplates)
 }
 
 // InitDBFromPath 按配置初始化数据库；sqlite 时 path 作为文件路径回退。
 func InitDBFromPath(path string) error {
+	if err := initThemeDir(path); err != nil {
+		return err
+	}
 	dialector, err := dbDialector(path)
 	if err != nil {
 		return err
@@ -85,10 +86,30 @@ func InitDBFromPath(path string) error {
 	if Conf.Debug {
 		DB = DB.Debug()
 	}
+	if err := migrateAndSeed(); err != nil {
+		return err
+	}
+	if err := Conf.LoadDynamicFromDB(DB); err != nil {
+		return err
+	}
+	return ReconcileTemplateSelection()
+}
+
+// initThemeDir 初始化自定义主题磁盘根目录（与数据库文件同级的 themes/）。
+func initThemeDir(dbPath string) error {
+	ThemeDir = filepath.Join(filepath.Dir(dbPath), "themes")
+	return os.MkdirAll(ThemeDir, 0o755)
+}
+
+// migrateAndSeed 迁移表结构、登记内置主题并加载运行期主题清单。
+func migrateAndSeed() error {
 	if err := autoMigrate(); err != nil {
 		return err
 	}
-	return Conf.LoadDynamicFromDB(DB)
+	if err := SeedBuiltinThemes(DB); err != nil {
+		return err
+	}
+	return ReloadThemes(DB)
 }
 
 // dbDialector 按 Conf.Database.Type 选择驱动（sqlite/mysql/postgres）。
@@ -115,7 +136,7 @@ func autoMigrate() error {
 		model.Notification{}, model.AlertRule{}, model.Service{}, model.NotificationGroupNotification{},
 		model.Transfer{}, model.ServerGroupServer{},
 		model.WAF{}, model.Oauth2Bind{}, model.JWTSession{},
-		model.APIToken{}, model.SettingStore{})
+		model.APIToken{}, model.SettingStore{}, model.Theme{})
 }
 
 // RecordTransferHourlyUsage 对流量记录进行打点
