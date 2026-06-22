@@ -209,7 +209,7 @@ func installThemeArchive(themePath string, fill func(tmpDir string) error) error
 	if ThemeDir == "" {
 		return errors.New("theme dir not initialized")
 	}
-	if err := os.MkdirAll(ThemeDir, 0o755); err != nil {
+	if err := os.MkdirAll(ThemeDir, 0o750); err != nil {
 		return err
 	}
 	rnd, err := utils.GenerateRandomString(8)
@@ -217,7 +217,7 @@ func installThemeArchive(themePath string, fill func(tmpDir string) error) error
 		return err
 	}
 	tmp := filepath.Join(ThemeDir, ".tmp-"+themePath+"-"+rnd)
-	if err := os.MkdirAll(tmp, 0o755); err != nil {
+	if err := os.MkdirAll(tmp, 0o750); err != nil {
 		return err
 	}
 	if err := fill(tmp); err != nil {

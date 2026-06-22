@@ -98,7 +98,7 @@ func InitDBFromPath(path string) error {
 // initThemeDir 初始化自定义主题磁盘根目录（与数据库文件同级的 themes/）。
 func initThemeDir(dbPath string) error {
 	ThemeDir = filepath.Join(filepath.Dir(dbPath), "themes")
-	return os.MkdirAll(ThemeDir, 0o755)
+	return os.MkdirAll(ThemeDir, 0o750)
 }
 
 // migrateAndSeed 迁移表结构、登记内置主题并加载运行期主题清单。
