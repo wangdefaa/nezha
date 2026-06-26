@@ -12,7 +12,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
-	"github.com/nezhahq/nezha/cmd/dashboard/controller/waf"
 	"github.com/nezhahq/nezha/model"
 	"github.com/nezhahq/nezha/pkg/idcodec"
 	"github.com/nezhahq/nezha/pkg/utils"
@@ -303,15 +302,12 @@ func fallbackAuthMiddleware(mw *jwt.GinJWTMiddleware) func(c *gin.Context) {
 		c.Set("JWT_PAYLOAD", claims)
 		identity := mw.IdentityHandler(c)
 
+		// optional 路由语义：有效 JWT 挂 user，失效或无 JWT 一律匿名继续。
+		// 失效但合法签发的 token（改密码后 revoked、TokenVersion 变更、会话过期/被清）
+		// 不再当作 token 爆破封禁；真正被篡改的 token 已由 identityHandler 精确拦截封禁。
 		if identity != nil {
 			model.UnblockIP(singleton.DB, realIP, model.BlockIDToken)
 			c.Set(mw.IdentityKey, identity)
-		} else {
-			isIpMismatch := c.GetBool(model.CtxKeyIsIPMismatch)
-			if !isIpMismatch {
-				waf.ShowBlockPage(c, model.BlockIP(singleton.DB, realIP, model.WAFBlockReasonTypeBruteForceToken, model.BlockIDToken))
-				return
-			}
 		}
 
 		c.Next()
