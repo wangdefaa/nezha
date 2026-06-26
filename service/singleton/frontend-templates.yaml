@@ -4,7 +4,7 @@
   github_repo: "wangdefaa/nezha-admin-dash"
   release_asset: "dist.zip"
   author: "wangdefaa"
-  version: "v0.0.2"
+  version: "v0.0.3"
   is_admin: true
   is_official: true
 - path: "user-dist"
