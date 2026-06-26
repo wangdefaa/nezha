@@ -68,25 +68,12 @@ func updateProfile(c *gin.Context) (any, error) {
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(pf.OriginalPassword)); err != nil {
 		return nil, singleton.Localizer.ErrorT("incorrect password")
 	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(pf.NewPassword), bcrypt.DefaultCost)
-	if err != nil {
+	if err := checkRejectPasswordAllowed(user.ID, pf.RejectPassword); err != nil {
 		return nil, err
 	}
-
-	var bindCount int64
-	if err := singleton.DB.Model(&model.Oauth2Bind{}).Where("user_id = ?", auth.(*model.User).ID).Count(&bindCount).Error; err != nil {
-		return nil, newGormError("%v", err)
+	if err := applyProfileChanges(&user, &pf); err != nil {
+		return nil, err
 	}
-
-	if pf.RejectPassword && bindCount < 1 {
-		return nil, singleton.Localizer.ErrorT("you don't have any oauth2 bindings")
-	}
-
-	user.Username = pf.NewUsername
-	user.Password = string(hash)
-	user.RejectPassword = pf.RejectPassword
-	user.TokenVersion += 1
 	if err := singleton.DB.Save(&user).Error; err != nil {
 		return nil, newGormError("%v", err)
 	}
@@ -96,6 +83,39 @@ func updateProfile(c *gin.Context) (any, error) {
 		return nil, newGormError("%v", err)
 	}
 	return nil, nil
+}
+
+// checkRejectPasswordAllowed 开启「禁止密码登录」前，账号必须至少绑定一个 OAuth2。
+func checkRejectPasswordAllowed(userID uint64, reject bool) error {
+	if !reject {
+		return nil
+	}
+	var bindCount int64
+	if err := singleton.DB.Model(&model.Oauth2Bind{}).
+		Where("user_id = ?", userID).Count(&bindCount).Error; err != nil {
+		return newGormError("%v", err)
+	}
+	if bindCount < 1 {
+		return singleton.Localizer.ErrorT("you don't have any oauth2 bindings")
+	}
+	return nil
+}
+
+// applyProfileChanges 按「留空即不修改」语义更新用户名/密码，避免空值覆盖把账号写坏。
+func applyProfileChanges(user *model.User, pf *model.ProfileForm) error {
+	if pf.NewUsername != "" {
+		user.Username = pf.NewUsername
+	}
+	if pf.NewPassword != "" {
+		hash, err := bcrypt.GenerateFromPassword([]byte(pf.NewPassword), bcrypt.DefaultCost)
+		if err != nil {
+			return err
+		}
+		user.Password = string(hash)
+	}
+	user.RejectPassword = pf.RejectPassword
+	user.TokenVersion += 1
+	return nil
 }
 
 // List user
