@@ -14,6 +14,8 @@ const (
 	RuleCoverIgnoreAll
 )
 
+var ruleNow = time.Now
+
 type NResult struct {
 	N uint64
 }
@@ -185,81 +187,65 @@ func (u *Rule) IsOfflineRule() bool {
 
 // GetTransferDurationStart 获取周期流量的起始时间
 func (u *Rule) GetTransferDurationStart() time.Time {
-	// Accept uppercase and lowercase
-	unit := strings.ToLower(u.CycleUnit)
-	startTime := *u.CycleStart
-	var nextTime time.Time
-	switch unit {
-	case "year":
-		nextTime = startTime.AddDate(int(u.CycleInterval), 0, 0)
-		for time.Now().After(nextTime) {
-			startTime = nextTime
-			nextTime = nextTime.AddDate(int(u.CycleInterval), 0, 0)
-		}
-	case "month":
-		nextTime = startTime.AddDate(0, int(u.CycleInterval), 0)
-		for time.Now().After(nextTime) {
-			startTime = nextTime
-			nextTime = nextTime.AddDate(0, int(u.CycleInterval), 0)
-		}
-	case "week":
-		nextTime = startTime.AddDate(0, 0, 7*int(u.CycleInterval))
-		for time.Now().After(nextTime) {
-			startTime = nextTime
-			nextTime = nextTime.AddDate(0, 0, 7*int(u.CycleInterval))
-		}
-	case "day":
-		nextTime = startTime.AddDate(0, 0, int(u.CycleInterval))
-		for time.Now().After(nextTime) {
-			startTime = nextTime
-			nextTime = nextTime.AddDate(0, 0, int(u.CycleInterval))
-		}
-	default:
-		// For hour unit or not set.
-		interval := 3600 * int64(u.CycleInterval)
-		startTime = time.Unix(u.CycleStart.Unix()+(time.Now().Unix()-u.CycleStart.Unix())/interval*interval, 0)
-	}
-
+	startTime, _ := u.getTransferDurationBounds(ruleNow())
 	return startTime
 }
 
 // GetTransferDurationEnd 获取周期流量结束时间
 func (u *Rule) GetTransferDurationEnd() time.Time {
-	// Accept uppercase and lowercase
+	_, nextTime := u.getTransferDurationBounds(ruleNow())
+	return nextTime
+}
+
+func (u *Rule) getTransferDurationBounds(now time.Time) (time.Time, time.Time) {
 	unit := strings.ToLower(u.CycleUnit)
 	startTime := *u.CycleStart
 	var nextTime time.Time
 	switch unit {
 	case "year":
-		nextTime = startTime.AddDate(int(u.CycleInterval), 0, 0)
-		for time.Now().After(nextTime) {
-			startTime = nextTime
-			nextTime = nextTime.AddDate(int(u.CycleInterval), 0, 0)
-		}
+		startTime, nextTime = calendarCycleBounds(startTime, int(u.CycleInterval), 0, now)
 	case "month":
-		nextTime = startTime.AddDate(0, int(u.CycleInterval), 0)
-		for time.Now().After(nextTime) {
-			startTime = nextTime
-			nextTime = nextTime.AddDate(0, int(u.CycleInterval), 0)
-		}
+		startTime, nextTime = calendarCycleBounds(startTime, 0, int(u.CycleInterval), now)
 	case "week":
 		nextTime = startTime.AddDate(0, 0, 7*int(u.CycleInterval))
-		for time.Now().After(nextTime) {
+		for now.After(nextTime) {
 			startTime = nextTime
 			nextTime = nextTime.AddDate(0, 0, 7*int(u.CycleInterval))
 		}
 	case "day":
 		nextTime = startTime.AddDate(0, 0, int(u.CycleInterval))
-		for time.Now().After(nextTime) {
+		for now.After(nextTime) {
 			startTime = nextTime
 			nextTime = nextTime.AddDate(0, 0, int(u.CycleInterval))
 		}
 	default:
 		// For hour unit or not set.
 		interval := 3600 * int64(u.CycleInterval)
-		startTime = time.Unix(u.CycleStart.Unix()+(time.Now().Unix()-u.CycleStart.Unix())/interval*interval, 0)
+		startTime = time.Unix(u.CycleStart.Unix()+(now.Unix()-u.CycleStart.Unix())/interval*interval, 0)
 		nextTime = time.Unix(startTime.Unix()+interval, 0)
 	}
 
-	return nextTime
+	return startTime, nextTime
+}
+
+// calendarCycleBounds 按日历周期(年/月)推进到包含 now 的当前区间,保持锚定日。
+func calendarCycleBounds(anchor time.Time, yearsPerCycle, monthsPerCycle int, now time.Time) (time.Time, time.Time) {
+	cycles := 0
+	startTime := addCalendarCycle(anchor, yearsPerCycle, monthsPerCycle, cycles)
+	nextTime := addCalendarCycle(anchor, yearsPerCycle, monthsPerCycle, cycles+1)
+	for now.After(nextTime) {
+		cycles++
+		startTime = addCalendarCycle(anchor, yearsPerCycle, monthsPerCycle, cycles)
+		nextTime = addCalendarCycle(anchor, yearsPerCycle, monthsPerCycle, cycles+1)
+	}
+	return startTime, nextTime
+}
+
+// addCalendarCycle 在 anchor 上叠加 cycles 个周期,锚定日超出目标月天数时取该月最后一天(如 1/29→2/28)。
+func addCalendarCycle(anchor time.Time, yearsPerCycle, monthsPerCycle, cycles int) time.Time {
+	years, months := yearsPerCycle*cycles, monthsPerCycle*cycles
+	h, m, s, ns, loc := anchor.Hour(), anchor.Minute(), anchor.Second(), anchor.Nanosecond(), anchor.Location()
+	first := time.Date(anchor.Year()+years, anchor.Month()+time.Month(months), 1, h, m, s, ns, loc)
+	lastDay := time.Date(first.Year(), first.Month()+1, 0, h, m, s, ns, loc).Day()
+	return time.Date(first.Year(), first.Month(), min(anchor.Day(), lastDay), h, m, s, ns, loc)
 }
