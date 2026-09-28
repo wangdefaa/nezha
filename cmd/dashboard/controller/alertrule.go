@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -51,16 +50,8 @@ func createAlertRule(c *gin.Context) (uint64, error) {
 		return 0, err
 	}
 
-	uid := getUid(c)
-
-	r.UserID = uid
-	r.Name = arf.Name
-	r.Rules = arf.Rules
-	r.NotificationGroupID = arf.NotificationGroupID
-	enable := arf.Enable
-	r.TriggerMode = arf.TriggerMode
-	r.Enable = &enable
-
+	r.UserID = getUid(c)
+	applyAlertRuleForm(&r, &arf)
 	if err := validateRule(c, &r); err != nil {
 		return 0, err
 	}
@@ -86,15 +77,14 @@ func createAlertRule(c *gin.Context) (uint64, error) {
 // @Success 200 {object} model.CommonResponse[any]
 // @Router /alert-rule/{id} [patch]
 func updateAlertRule(c *gin.Context) (any, error) {
-	idStr := c.Param("id")
-	id, err := strconv.ParseUint(idStr, 10, 64)
+	id, err := paramID(c)
 	if err != nil {
 		return nil, err
 	}
 
 	var arf model.AlertRuleForm
 	if err := c.ShouldBindJSON(&arf); err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	var r model.AlertRule
@@ -106,23 +96,27 @@ func updateAlertRule(c *gin.Context) (any, error) {
 		return nil, singleton.Localizer.ErrorT("permission denied")
 	}
 
-	r.Name = arf.Name
-	r.Rules = arf.Rules
-	r.NotificationGroupID = arf.NotificationGroupID
-	enable := arf.Enable
-	r.TriggerMode = arf.TriggerMode
-	r.Enable = &enable
-
+	applyAlertRuleForm(&r, &arf)
 	if err := validateRule(c, &r); err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	if err := singleton.DB.Save(&r).Error; err != nil {
-		return 0, newGormError("%v", err)
+		return nil, newGormError("%v", err)
 	}
 
 	singleton.OnRefreshOrAddAlert(&r)
 	return r.ID, nil
+}
+
+// applyAlertRuleForm 把表单字段写入 r（不动 ID/UserID）。
+func applyAlertRuleForm(r *model.AlertRule, arf *model.AlertRuleForm) {
+	r.Name = arf.Name
+	r.Rules = arf.Rules
+	r.NotificationGroupID = arf.NotificationGroupID
+	r.TriggerMode = arf.TriggerMode
+	enable := arf.Enable
+	r.Enable = &enable
 }
 
 // Batch delete Alert rules
@@ -165,37 +159,55 @@ func validateRule(c *gin.Context, r *model.AlertRule) error {
 	if !r.HasPermission(c) {
 		return singleton.Localizer.ErrorT("permission denied")
 	}
-	if len(r.Rules) > 0 {
-		for _, rule := range r.Rules {
-			switch rule.Cover {
-			case model.RuleCoverAll, model.RuleCoverIgnoreAll:
-			default:
-				return singleton.Localizer.ErrorT("permission denied")
-			}
-
-			if !rule.IsTransferDurationRule() {
-				if rule.Duration < 3 {
-					return singleton.Localizer.ErrorT("duration need to be at least 3")
-				}
-			} else {
-				if rule.CycleInterval < 1 {
-					return singleton.Localizer.ErrorT("cycle_interval need to be at least 1")
-				}
-				if rule.CycleStart == nil {
-					return singleton.Localizer.ErrorT("cycle_start is not set")
-				}
-				if rule.CycleStart.After(time.Now()) {
-					return singleton.Localizer.ErrorT("cycle_start is a future value")
-				}
-			}
-		}
-	} else {
+	if len(r.Rules) == 0 {
 		return singleton.Localizer.ErrorT("need to configure at least a single rule")
 	}
-
-	if err := assertOwnsNotificationGroup(c, r.NotificationGroupID); err != nil {
-		return err
+	for _, rule := range r.Rules {
+		if err := validateRuleItem(rule); err != nil {
+			return err
+		}
 	}
+	return assertOwnsNotificationGroup(c, r.NotificationGroupID)
+}
 
+// validateRuleItem 校验单条规则：类型白名单、覆盖范围与 duration 上下限（上限防持久化后转 int 回绕，毒化告警协程）。
+func validateRuleItem(rule *model.Rule) error {
+	if rule == nil {
+		return singleton.Localizer.ErrorT("rule is not set")
+	}
+	if !rule.IsSupportedType() {
+		return singleton.Localizer.ErrorT("unsupported rule type")
+	}
+	switch rule.Cover {
+	case model.RuleCoverAll, model.RuleCoverIgnoreAll:
+	default:
+		return singleton.Localizer.ErrorT("permission denied")
+	}
+	if rule.IsTransferDurationRule() {
+		return validateCycleRule(rule)
+	}
+	if rule.Duration < 3 {
+		return singleton.Localizer.ErrorT("duration need to be at least 3")
+	}
+	if rule.Duration > model.MaxAlertRuleDuration {
+		return singleton.Localizer.ErrorT("duration is too large")
+	}
+	return nil
+}
+
+// validateCycleRule 校验周期流量规则的周期参数（上限防日历换算溢出致除零或死循环）。
+func validateCycleRule(rule *model.Rule) error {
+	if rule.CycleInterval < 1 {
+		return singleton.Localizer.ErrorT("cycle_interval need to be at least 1")
+	}
+	if rule.CycleInterval > model.MaxAlertRuleCycleInterval {
+		return singleton.Localizer.ErrorT("cycle_interval is too large")
+	}
+	if rule.CycleStart == nil {
+		return singleton.Localizer.ErrorT("cycle_start is not set")
+	}
+	if rule.CycleStart.After(time.Now()) {
+		return singleton.Localizer.ErrorT("cycle_start is a future value")
+	}
 	return nil
 }

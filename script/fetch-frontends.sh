@@ -17,7 +17,8 @@ download_and_extract() {
 
   pushd "$TMP_DIR" || exit
 
-  curl -L -o "dist.zip" "$repository/releases/download/$version/dist.zip"
+  # -f：HTTP 错误（如版本号写错 404）直接失败，不把错误页当 zip 往下解
+  curl -fsSL --retry 3 -o "dist.zip" "$repository/releases/download/$version/dist.zip"
 
   [ -e "$targetDir" ] && rm -r "$targetDir"
   unzip -q dist.zip
@@ -29,7 +30,7 @@ download_and_extract() {
 
 count=$(yq eval '. | length' "$TEMPLATES_FILE")
 
-for i in $(seq 0 $(("$count"-1))); do
+for i in $(seq 0 $((count - 1))); do
   path=$(yq -r ".[$i].path" "$TEMPLATES_FILE")
   repository=$(yq -r ".[$i].repository" "$TEMPLATES_FILE")
   version=$(yq -r ".[$i].version" "$TEMPLATES_FILE")

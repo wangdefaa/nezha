@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2025-01-30 21:58+0800\n"
+"POT-Creation-Date: 2026-09-28 16:04+0530\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -17,296 +17,283 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=n != 1;\n"
 
-#: cmd/dashboard/controller/alertrule.go:104
+#: cmd/dashboard/controller/alertrule.go:92
 #, c-format
 msgid "alert id %d does not exist"
 msgstr ""
 
-#: cmd/dashboard/controller/alertrule.go:108
-#: cmd/dashboard/controller/alertrule.go:156
-#: cmd/dashboard/controller/alertrule.go:176
-#: cmd/dashboard/controller/controller.go:226
-#: cmd/dashboard/controller/cron.go:58 cmd/dashboard/controller/cron.go:124
-#: cmd/dashboard/controller/cron.go:136 cmd/dashboard/controller/cron.go:195
-#: cmd/dashboard/controller/cron.go:224 cmd/dashboard/controller/ddns.go:131
-#: cmd/dashboard/controller/ddns.go:192 cmd/dashboard/controller/fm.go:43
-#: cmd/dashboard/controller/nat.go:59 cmd/dashboard/controller/nat.go:111
-#: cmd/dashboard/controller/nat.go:122 cmd/dashboard/controller/nat.go:162
-#: cmd/dashboard/controller/notification.go:112
-#: cmd/dashboard/controller/notification.go:166
-#: cmd/dashboard/controller/notification_group.go:76
-#: cmd/dashboard/controller/notification_group.go:152
-#: cmd/dashboard/controller/notification_group.go:164
-#: cmd/dashboard/controller/notification_group.go:233
-#: cmd/dashboard/controller/server.go:66 cmd/dashboard/controller/server.go:78
-#: cmd/dashboard/controller/server.go:137
-#: cmd/dashboard/controller/server.go:201
-#: cmd/dashboard/controller/server_group.go:75
+#: cmd/dashboard/controller/alertrule.go:96
+#: cmd/dashboard/controller/alertrule.go:146
+#: cmd/dashboard/controller/alertrule.go:160
+#: cmd/dashboard/controller/alertrule.go:184
+#: cmd/dashboard/controller/controller.go:229
+#: cmd/dashboard/controller/notification.go:120
+#: cmd/dashboard/controller/notification.go:178
+#: cmd/dashboard/controller/notification_group.go:75
+#: cmd/dashboard/controller/notification_group.go:126
+#: cmd/dashboard/controller/notification_group.go:135
+#: cmd/dashboard/controller/notification_group.go:199
+#: cmd/dashboard/controller/permissions.go:51
+#: cmd/dashboard/controller/permissions.go:56
+#: cmd/dashboard/controller/permissions.go:145
+#: cmd/dashboard/controller/permissions.go:155
+#: cmd/dashboard/controller/permissions.go:162
+#: cmd/dashboard/controller/permissions.go:290
+#: cmd/dashboard/controller/server.go:65 cmd/dashboard/controller/server.go:103
+#: cmd/dashboard/controller/server_group.go:99
 #: cmd/dashboard/controller/server_group.go:150
-#: cmd/dashboard/controller/server_group.go:229
-#: cmd/dashboard/controller/service.go:271
-#: cmd/dashboard/controller/service.go:342
-#: cmd/dashboard/controller/service.go:369
-#: cmd/dashboard/controller/terminal.go:41
+#: cmd/dashboard/controller/server_group.go:163
+#: cmd/dashboard/controller/server_group.go:225
+#: cmd/dashboard/controller/server_group.go:236
+#: cmd/dashboard/controller/service.go:482
+#: cmd/dashboard/controller/service.go:544
+#: cmd/dashboard/controller/service.go:579
 msgid "permission denied"
 msgstr ""
 
-#: cmd/dashboard/controller/alertrule.go:184
-msgid "duration need to be at least 3"
-msgstr ""
-
-#: cmd/dashboard/controller/alertrule.go:188
-msgid "cycle_interval need to be at least 1"
-msgstr ""
-
-#: cmd/dashboard/controller/alertrule.go:191
-msgid "cycle_start is not set"
-msgstr ""
-
-#: cmd/dashboard/controller/alertrule.go:194
-msgid "cycle_start is a future value"
-msgstr ""
-
-#: cmd/dashboard/controller/alertrule.go:199
+#: cmd/dashboard/controller/alertrule.go:163
 msgid "need to configure at least a single rule"
 msgstr ""
 
-#: cmd/dashboard/controller/controller.go:220
-#: cmd/dashboard/controller/oauth2.go:153
-#: cmd/dashboard/controller/server_group.go:162
-#: cmd/dashboard/controller/service.go:97 cmd/dashboard/controller/user.go:27
+#: cmd/dashboard/controller/alertrule.go:176
+msgid "rule is not set"
+msgstr ""
+
+#: cmd/dashboard/controller/alertrule.go:179
+msgid "unsupported rule type"
+msgstr ""
+
+#: cmd/dashboard/controller/alertrule.go:190
+msgid "duration need to be at least 3"
+msgstr ""
+
+#: cmd/dashboard/controller/alertrule.go:193
+msgid "duration is too large"
+msgstr ""
+
+#: cmd/dashboard/controller/alertrule.go:201
+msgid "cycle_interval need to be at least 1"
+msgstr ""
+
+#: cmd/dashboard/controller/alertrule.go:204
+msgid "cycle_interval is too large"
+msgstr ""
+
+#: cmd/dashboard/controller/alertrule.go:207
+msgid "cycle_start is not set"
+msgstr ""
+
+#: cmd/dashboard/controller/alertrule.go:210
+msgid "cycle_start is a future value"
+msgstr ""
+
+#: cmd/dashboard/controller/controller.go:225
+#: cmd/dashboard/controller/jwt.go:215 cmd/dashboard/controller/oauth2.go:178
+#: cmd/dashboard/controller/server.go:204
+#: cmd/dashboard/controller/server_group.go:159
+#: cmd/dashboard/controller/service.go:288 cmd/dashboard/controller/user.go:27
 #: cmd/dashboard/controller/user.go:63
 msgid "unauthorized"
 msgstr ""
 
-#: cmd/dashboard/controller/controller.go:243
+#: cmd/dashboard/controller/controller.go:244
 msgid "database error"
 msgstr ""
 
-#: cmd/dashboard/controller/cron.go:75 cmd/dashboard/controller/cron.go:149
-msgid "scheduled tasks cannot be triggered by alarms"
-msgstr ""
-
-#: cmd/dashboard/controller/cron.go:132 cmd/dashboard/controller/cron.go:190
-#, c-format
-msgid "task id %d does not exist"
-msgstr ""
-
-#: cmd/dashboard/controller/ddns.go:57 cmd/dashboard/controller/ddns.go:122
-msgid "the retry count must be an integer between 1 and 10"
-msgstr ""
-
-#: cmd/dashboard/controller/ddns.go:81 cmd/dashboard/controller/ddns.go:154
-msgid "error parsing %s: %v"
-msgstr ""
-
-#: cmd/dashboard/controller/ddns.go:127 cmd/dashboard/controller/nat.go:118
-#, c-format
-msgid "profile id %d does not exist"
-msgstr ""
-
-#: cmd/dashboard/controller/fm.go:39 cmd/dashboard/controller/terminal.go:37
-msgid "server not found or not connected"
-msgstr ""
-
-#: cmd/dashboard/controller/notification.go:69
-#: cmd/dashboard/controller/notification.go:131
+#: cmd/dashboard/controller/notification.go:83
 msgid "a test message"
 msgstr ""
 
-#: cmd/dashboard/controller/notification.go:108
+#: cmd/dashboard/controller/notification.go:117
 #, c-format
 msgid "notification id %d does not exist"
 msgstr ""
 
-#: cmd/dashboard/controller/notification_group.go:94
-#: cmd/dashboard/controller/notification_group.go:175
+#: cmd/dashboard/controller/notification_group.go:84
+#: cmd/dashboard/controller/notification_group.go:141
 msgid "have invalid notification id"
 msgstr ""
 
-#: cmd/dashboard/controller/notification_group.go:160
-#: cmd/dashboard/controller/server_group.go:158
+#: cmd/dashboard/controller/notification_group.go:131
+#: cmd/dashboard/controller/server_group.go:155
 #, c-format
 msgid "group id %d does not exist"
 msgstr ""
 
-#: cmd/dashboard/controller/oauth2.go:42 cmd/dashboard/controller/oauth2.go:83
+#: cmd/dashboard/controller/oauth2.go:49 cmd/dashboard/controller/oauth2.go:108
 msgid "provider is required"
 msgstr ""
 
-#: cmd/dashboard/controller/oauth2.go:52 cmd/dashboard/controller/oauth2.go:87
-#: cmd/dashboard/controller/oauth2.go:132
+#: cmd/dashboard/controller/oauth2.go:65 cmd/dashboard/controller/oauth2.go:112
+#: cmd/dashboard/controller/oauth2.go:157
 msgid "provider not found"
 msgstr ""
 
-#: cmd/dashboard/controller/oauth2.go:100
+#: cmd/dashboard/controller/oauth2.go:125
 msgid "operation not permitted"
 msgstr ""
 
-#: cmd/dashboard/controller/oauth2.go:138
+#: cmd/dashboard/controller/oauth2.go:163
 msgid "code is required"
 msgstr ""
 
-#: cmd/dashboard/controller/oauth2.go:175
+#: cmd/dashboard/controller/oauth2.go:191
+msgid "oauth2 identity is already bound to another user"
+msgstr ""
+
+#: cmd/dashboard/controller/oauth2.go:195
 msgid "oauth2 user not binded yet"
 msgstr ""
 
-#: cmd/dashboard/controller/oauth2.go:217
-#: cmd/dashboard/controller/oauth2.go:223
-#: cmd/dashboard/controller/oauth2.go:228
+#: cmd/dashboard/controller/oauth2.go:246
+msgid "oauth2 user id not found"
+msgstr ""
+
+#: cmd/dashboard/controller/oauth2.go:255
+#: cmd/dashboard/controller/oauth2.go:261
+#: cmd/dashboard/controller/oauth2.go:266
 msgid "invalid state key"
 msgstr ""
 
-#: cmd/dashboard/controller/server.go:74
+#: cmd/dashboard/controller/permissions.go:287
+#, c-format
+msgid "notification group id %d does not exist"
+msgstr ""
+
+#: cmd/dashboard/controller/server.go:61
 #, c-format
 msgid "server id %d does not exist"
 msgstr ""
 
-#: cmd/dashboard/controller/server.go:250
-msgid "operation timeout"
-msgstr ""
-
-#: cmd/dashboard/controller/server.go:257
-msgid "get server config failed: %v"
-msgstr ""
-
-#: cmd/dashboard/controller/server.go:261
-msgid "get server config failed"
-msgstr ""
-
-#: cmd/dashboard/controller/server_group.go:92
-#: cmd/dashboard/controller/server_group.go:172
-msgid "have invalid server id"
-msgstr ""
-
-#: cmd/dashboard/controller/service.go:90
-#: cmd/dashboard/controller/service.go:165
+#: cmd/dashboard/controller/server.go:200
+#: cmd/dashboard/controller/service.go:284
 msgid "server not found"
 msgstr ""
 
-#: cmd/dashboard/controller/service.go:267
+#: cmd/dashboard/controller/server.go:211
+msgid "invalid metric name"
+msgstr ""
+
+#: cmd/dashboard/controller/server.go:221
+#: cmd/dashboard/controller/service.go:166
+#: cmd/dashboard/controller/service.go:301
+msgid "unauthorized: only 1d data available for guests"
+msgstr ""
+
+#: cmd/dashboard/controller/server_group.go:108
+#: cmd/dashboard/controller/server_group.go:168
+msgid "have invalid server id"
+msgstr ""
+
+#: cmd/dashboard/controller/service.go:153
+msgid "service not found"
+msgstr ""
+
+#: cmd/dashboard/controller/service.go:540
 #, c-format
 msgid "service id %d does not exist"
+msgstr ""
+
+#: cmd/dashboard/controller/theme.go:44 cmd/dashboard/controller/theme.go:82
+msgid "invalid theme name"
+msgstr ""
+
+#: cmd/dashboard/controller/theme.go:108
+msgid "only github themes can be refreshed"
+msgstr ""
+
+#: cmd/dashboard/controller/theme.go:160
+msgid "builtin theme cannot be deleted"
+msgstr ""
+
+#: cmd/dashboard/controller/theme.go:163
+msgid "theme in use"
 msgstr ""
 
 #: cmd/dashboard/controller/user.go:68
 msgid "incorrect password"
 msgstr ""
 
-#: cmd/dashboard/controller/user.go:82
+#: cmd/dashboard/controller/user.go:98
 msgid "you don't have any oauth2 bindings"
 msgstr ""
 
-#: cmd/dashboard/controller/user.go:131
+#: cmd/dashboard/controller/user.go:155
 msgid "password length must be greater than 6"
 msgstr ""
 
-#: cmd/dashboard/controller/user.go:134
+#: cmd/dashboard/controller/user.go:158
 msgid "username can't be empty"
 msgstr ""
 
-#: cmd/dashboard/controller/user.go:137
+#: cmd/dashboard/controller/user.go:161
 msgid "invalid role"
 msgstr ""
 
-#: cmd/dashboard/controller/user.go:176
+#: cmd/dashboard/controller/user.go:200
 msgid "can't delete yourself"
 msgstr ""
 
-#: service/rpc/io_stream.go:128
-msgid "timeout: no connection established"
-msgstr ""
-
-#: service/rpc/io_stream.go:131
-msgid "timeout: user connection not established"
-msgstr ""
-
-#: service/rpc/io_stream.go:134
-msgid "timeout: agent connection not established"
-msgstr ""
-
-#: service/rpc/nezha.go:71
-msgid "Scheduled Task Executed Successfully"
-msgstr ""
-
-#: service/rpc/nezha.go:75
-msgid "Scheduled Task Executed Failed"
-msgstr ""
-
-#: service/rpc/nezha.go:274
+#: service/rpc/nezha.go:266
 msgid "IP Changed"
 msgstr ""
 
-#: service/singleton/alertsentinel.go:169
+#: service/singleton/alertsentinel.go:196
 msgid "Incident"
 msgstr ""
 
-#: service/singleton/alertsentinel.go:179
+#: service/singleton/alertsentinel.go:206
 msgid "Resolved"
 msgstr ""
 
-#: service/singleton/crontask.go:54
-msgid "Tasks failed to register: ["
-msgstr ""
-
-#: service/singleton/crontask.go:61
-msgid ""
-"] These tasks will not execute properly. Fix them in the admin dashboard."
-msgstr ""
-
-#: service/singleton/crontask.go:144 service/singleton/crontask.go:169
-#, c-format
-msgid "[Task failed] %s: server %s is offline and cannot execute the task"
-msgstr ""
-
-#: service/singleton/servicesentinel.go:468
-#, c-format
-msgid "[Latency] %s %2f > %2f, Reporter: %s"
-msgstr ""
-
-#: service/singleton/servicesentinel.go:475
-#, c-format
-msgid "[Latency] %s %2f < %2f, Reporter: %s"
-msgstr ""
-
-#: service/singleton/servicesentinel.go:501
-#, c-format
-msgid "[%s] %s Reporter: %s, Error: %s"
-msgstr ""
-
-#: service/singleton/servicesentinel.go:544
+#: service/singleton/servicesentinel.go:830
 #, c-format
 msgid "[TLS] Fetch cert info failed, Reporter: %s, Error: %s"
 msgstr ""
 
-#: service/singleton/servicesentinel.go:584
+#: service/singleton/servicesentinel.go:862
 #, c-format
 msgid "The TLS certificate will expire within seven days. Expiration time: %s"
 msgstr ""
 
-#: service/singleton/servicesentinel.go:597
+#: service/singleton/servicesentinel.go:872
 #, c-format
 msgid ""
 "TLS certificate changed, old: issuer %s, expires at %s; new: issuer %s, "
 "expires at %s"
 msgstr ""
 
-#: service/singleton/servicesentinel.go:633
+#: service/singleton/servicesentinel.go:893
+#, c-format
+msgid "[Latency] %s %2f > %2f, Reporter: %s"
+msgstr ""
+
+#: service/singleton/servicesentinel.go:897
+#, c-format
+msgid "[Latency] %s %2f < %2f, Reporter: %s"
+msgstr ""
+
+#: service/singleton/servicesentinel.go:915
+#, c-format
+msgid "[%s] %s Reporter: %s, Error: %s"
+msgstr ""
+
+#: service/singleton/servicesentinel.go:952
 msgid "No Data"
 msgstr ""
 
-#: service/singleton/servicesentinel.go:635
+#: service/singleton/servicesentinel.go:954
 msgid "Good"
 msgstr ""
 
-#: service/singleton/servicesentinel.go:637
+#: service/singleton/servicesentinel.go:956
 msgid "Low Availability"
 msgstr ""
 
-#: service/singleton/servicesentinel.go:639
+#: service/singleton/servicesentinel.go:958
 msgid "Down"
 msgstr ""
 
-#: service/singleton/user.go:60
+#: service/singleton/user.go:108
 msgid "user id not specified"
 msgstr ""

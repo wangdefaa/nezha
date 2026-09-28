@@ -23,6 +23,24 @@ const (
 	TaskTypeKeepalive = 7
 )
 
+// IsServiceMonitorType 仅放行三种被动拨测类型；Service.Type 与 agent 特权任务共用 Task.Type 命名空间。
+func IsServiceMonitorType(t uint64) bool {
+	switch t {
+	case TaskTypeHTTPGet, TaskTypeICMPPing, TaskTypeTCPPing:
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidateServiceMonitorType 在 API / 持久化 / 调度边界统一拒绝非拨测类型。
+func ValidateServiceMonitorType(t uint64) error {
+	if !IsServiceMonitorType(t) {
+		return fmt.Errorf("invalid service monitor type %d: allowed types are 1 (HTTP GET), 2 (ICMP ping), and 3 (TCP ping)", t)
+	}
+	return nil
+}
+
 const (
 	ServiceCoverAll = iota
 	ServiceCoverIgnoreAll
@@ -50,7 +68,23 @@ type Service struct {
 	CronJobID   cron.EntryID    `gorm:"-" json:"-"`
 }
 
+// CoversServer 判断监控是否作用于 serverID：CoverAll 时 SkipServers 是排除集，
+// CoverIgnoreAll 时是包含集；未知 cover 一律不覆盖（与 DispatchTask 的 fail-closed 一致）。
+func (m *Service) CoversServer(serverID uint64) bool {
+	switch m.Cover {
+	case ServiceCoverAll:
+		return !m.SkipServers[serverID]
+	case ServiceCoverIgnoreAll:
+		return m.SkipServers[serverID]
+	default:
+		return false
+	}
+}
+
 func (m *Service) PB() *pb.Task {
+	if m == nil || !IsServiceMonitorType(uint64(m.Type)) {
+		return nil
+	}
 	return &pb.Task{
 		Id:   m.ID,
 		Type: uint64(m.Type),
@@ -59,13 +93,12 @@ func (m *Service) PB() *pb.Task {
 }
 
 // HasPermission 扩展默认的 owner/admin 检查，让 PAT 的 server_ids 白名单
-// 同样能收窄 service monitor 的列出/删除/更新路径，语义与 Cron.HasPermission
-// 对齐：
+// 同样能收窄 service monitor 的列出/删除/更新路径：
 //   - ServiceCoverAll：SkipServers 是 deny-set。DispatchTask 会探测 owner 在
 //     deny-set 之外的所有 server，所以受限 PAT 必须保证 deny-set 已经覆盖
 //     白名单外的全部 owner servers。判定与 controller 的
 //     enforcePATServiceDispatchScope / rejectImplicitServiceCoverForLimitedPAT
-//     共用 denyListSafeForLimitedPAT。
+//     共用 DenyListSafeForLimitedPAT。
 //   - ServiceCoverIgnoreAll：SkipServers 是 allow-set，要求每个被覆盖的
 //     server 都在 PAT 白名单内。
 //   - 其它情况保留旧的“PAT 按 owner 关系判定”行为。
@@ -73,19 +106,15 @@ func (m *Service) HasPermission(ctx *gin.Context) bool {
 	if !m.Common.HasPermission(ctx) {
 		return false
 	}
-	v, ok := ctx.Get(CtxKeyAPIToken)
-	if !ok {
-		return true
-	}
-	tok, _ := v.(APITokenAccessor)
+	tok := PATFromContext(ctx)
 	if tok == nil {
 		return true
 	}
 	switch m.Cover {
 	case ServiceCoverAll:
-		return DenyListSafeForLimitedPAT(tok, m.GetUserID(), skipServersTrueIDs(m.SkipServers))
+		return DenyListSafeForLimitedPAT(tok, m.GetUserID(), EnabledIDs(m.SkipServers))
 	case ServiceCoverIgnoreAll:
-		for _, id := range skipServersTrueIDs(m.SkipServers) {
+		for _, id := range EnabledIDs(m.SkipServers) {
 			if !tok.CanAccessServer(id) {
 				return false
 			}
@@ -96,13 +125,15 @@ func (m *Service) HasPermission(ctx *gin.Context) bool {
 	}
 }
 
-func skipServersTrueIDs(skip map[uint64]bool) []uint64 {
-	if len(skip) == 0 {
+// EnabledIDs 取出 map 中值为 true 的 id（SkipServers / Rule.Ignore 的 false 项无运行时效果）。
+// 结果无序；空 map 返回 nil。
+func EnabledIDs(m map[uint64]bool) []uint64 {
+	if len(m) == 0 {
 		return nil
 	}
-	out := make([]uint64, 0, len(skip))
-	for id, mark := range skip {
-		if mark {
+	out := make([]uint64, 0, len(m))
+	for id, enabled := range m {
+		if enabled {
 			out = append(out, id)
 		}
 	}
@@ -119,6 +150,9 @@ func (m *Service) CronSpec() string {
 }
 
 func (m *Service) BeforeSave(tx *gorm.DB) error {
+	if err := ValidateServiceMonitorType(uint64(m.Type)); err != nil {
+		return err
+	}
 	if data, err := json.Marshal(m.SkipServers); err != nil {
 		return err
 	} else {
@@ -135,14 +169,4 @@ func (m *Service) AfterFind(tx *gorm.DB) error {
 	}
 
 	return nil
-}
-
-// IsServiceSentinelNeeded 判断该任务类型是否需要进行服务监控 需要则返回true
-func IsServiceSentinelNeeded(t uint64) bool {
-	switch t {
-	case TaskTypeUpgrade, TaskTypeKeepalive:
-		return false
-	default:
-		return true
-	}
 }

@@ -3,7 +3,8 @@
 # 快速开始:
 #   1. mkdir -p data && cp config.yaml.example data/config.yaml   # 按需修改
 #   2. docker compose up -d
-#   3. 浏览器访问 http://<服务器IP>:8008/dashboard,默认管理员见首启日志
+#   3. 浏览器访问 http://<服务器IP>:8008/dashboard,用户名 admin。
+#      密码取下方 NZ_INIT_ADMIN_PASSWORD;未设置时随机生成,用 docker compose logs dashboard 查看(仅首启打印一次)
 #
 # 仅用内置 sqlite 时,data/config.yaml 也可省略(首启自动生成 bootstrap 配置)。
 services:
@@ -17,6 +18,8 @@ services:
       - ./data:/dashboard/data  # 配置、数据库、时序数据持久化
     environment:
       TZ: Asia/Shanghai
+      # 首次启动创建的管理员 admin 的密码(只在库里还没有用户时生效):
+      # NZ_INIT_ADMIN_PASSWORD: "替换为强密码"
       # 生产建议用环境变量注入 JWT 密钥,使其不写入磁盘:
       # NZ_JWTSECRETKEY: "替换为足够随机的长字符串"
     # 改用下方 postgres 时:在 data/config.yaml 设置 database.type=postgres

@@ -79,6 +79,12 @@ func canonicalRoutes() []scopedRoute {
 		{"POST", "/api/v1/online-user/batch-block", "nezha:admin:*"},
 		{"PATCH", "/api/v1/setting", "nezha:admin:*"},
 		{"POST", "/api/v1/maintenance", "nezha:admin:*"},
+		{"GET", "/api/v1/theme", "nezha:admin:*"},
+		{"POST", "/api/v1/theme/upload", "nezha:admin:*"},
+		{"POST", "/api/v1/theme/github", "nezha:admin:*"},
+		{"POST", "/api/v1/theme/{id}/refresh", "nezha:admin:*"},
+		{"POST", "/api/v1/theme/{id}/apply", "nezha:admin:*"},
+		{"POST", "/api/v1/batch-delete/theme", "nezha:admin:*"},
 	}
 }
 

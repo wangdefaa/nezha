@@ -110,37 +110,17 @@ func (n *Notification) setRequestHeader(req *http.Request) error {
 	return nil
 }
 
+// Send 发送通知。返回的错误去掉了请求 URL：*url.Error 默认带完整地址，而通知 URL 常内嵌
+// bot token / access_token，测试发送失败时会原样回显给调用方并写进日志，绕过列表接口的凭据脱敏。
 func (ns *NotificationServerBundle) Send(message string) error {
-	n := ns.Notification
-	verifyTLS := n.VerifyTLS != nil && *n.VerifyTLS
+	return redactURLError(ns.send(message))
+}
 
-	reqBody, err := ns.reqBody(message)
+func (ns *NotificationServerBundle) send(message string) error {
+	req, client, err := ns.buildRequest(message)
 	if err != nil {
 		return err
 	}
-
-	reqMethod, err := n.reqMethod()
-	if err != nil {
-		return err
-	}
-
-	reqURL := ns.reqURL(message)
-	client, err := newNotificationHTTPClient(reqURL, verifyTLS)
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequest(reqMethod, reqURL, strings.NewReader(reqBody))
-	if err != nil {
-		return err
-	}
-
-	n.setContentType(req)
-
-	if err := n.setRequestHeader(req); err != nil {
-		return err
-	}
-
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -148,14 +128,47 @@ func (ns *NotificationServerBundle) Send(message string) error {
 	defer func() {
 		_ = resp.Body.Close()
 	}()
-
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return notificationResponseError(resp)
-	} else {
-		_, _ = io.Copy(io.Discard, resp.Body)
 	}
-
+	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
+}
+
+// buildRequest 组装通知请求及固定到已校验 IP 的 HTTP 客户端。
+func (ns *NotificationServerBundle) buildRequest(message string) (*http.Request, *http.Client, error) {
+	n := ns.Notification
+	reqBody, err := ns.reqBody(message)
+	if err != nil {
+		return nil, nil, err
+	}
+	reqMethod, err := n.reqMethod()
+	if err != nil {
+		return nil, nil, err
+	}
+	reqURL := ns.reqURL(message)
+	client, err := newNotificationHTTPClient(reqURL, n.VerifyTLS != nil && *n.VerifyTLS)
+	if err != nil {
+		return nil, nil, err
+	}
+	req, err := http.NewRequest(reqMethod, reqURL, strings.NewReader(reqBody))
+	if err != nil {
+		return nil, nil, err
+	}
+	n.setContentType(req)
+	if err := n.setRequestHeader(req); err != nil {
+		return nil, nil, err
+	}
+	return req, client, nil
+}
+
+// redactURLError 去掉 *url.Error 里的 URL，只保留操作名与底层原因（仍可 errors.Is/As 底层错误）。
+func redactURLError(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("%s notification request failed: %w", ue.Op, ue.Err)
+	}
+	return err
 }
 
 func notificationResponseError(resp *http.Response) error {
@@ -167,7 +180,7 @@ func newNotificationHTTPClient(rawURL string, verifyTLS bool) (*http.Client, err
 	return utils.NewRestrictedHTTPClient(rawURL, !verifyTLS)
 }
 
-// replaceParamInString 替换字符串中的占位符
+// replaceParamsInString 替换字符串中的 #NEZHA#、#SERVER.*# 等占位符，mod 用于按目标格式转义
 func (ns *NotificationServerBundle) replaceParamsInString(str string, message string, mod func(string) string) string {
 	if mod == nil {
 		mod = func(s string) string { return s }

@@ -13,14 +13,14 @@
 //	nezha:{resource}:{verb}
 //	  resource: inventory | server | service | alertrule |
 //	            notification | notification-group | admin
-//	  verb:     read | write | delete | exec
+//	  verb:     read | write | delete
 //
 //	inventory vs server：inventory 管“能看到/能删哪些机器”（列出 server /
 //	server-group、删除 server / server-group）；server 管对已知机器的运行态
-//	操作（exec / 编辑配置 / metrics）。
+//	操作（编辑配置 / force-update / metrics）。
 //
 //	nezha:*               Admin-only superuser
-//	nezha:admin:*         Admin-only user/waf/setting/online-user management
+//	nezha:admin:*         Admin-only user/waf/setting/online-user/theme management
 //	nezha:<res>:*         All actions on a resource
 //
 // # REST endpoints (PAT required scope)
@@ -69,6 +69,12 @@
 //	POST   /api/v1/online-user/batch-block           nezha:admin:*
 //	PATCH  /api/v1/setting                           nezha:admin:*
 //	POST   /api/v1/maintenance                       nezha:admin:*
+//	GET    /api/v1/theme                             nezha:admin:*
+//	POST   /api/v1/theme/upload                      nezha:admin:*
+//	POST   /api/v1/theme/github                      nezha:admin:*
+//	POST   /api/v1/theme/{id}/refresh                nezha:admin:*
+//	POST   /api/v1/theme/{id}/apply                  nezha:admin:*
+//	POST   /api/v1/batch-delete/theme                nezha:admin:*
 //
 // # Endpoints permanently forbidden to PAT
 //
@@ -77,6 +83,7 @@
 // `restPATForbiddenMiddleware` returns 403 to PAT-authenticated requests.
 //
 //	POST   /api/v1/refresh-token
+//	POST   /api/v1/logout
 //	GET    /api/v1/profile
 //	POST   /api/v1/profile
 //	POST   /api/v1/oauth2/{provider}/unbind

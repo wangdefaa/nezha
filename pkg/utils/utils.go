@@ -11,17 +11,10 @@ import (
 	"net/netip"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
-
-	"golang.org/x/exp/constraints"
 )
 
 var (
-	DNSServersV4 = []string{"8.8.8.8:53", "8.8.4.4:53", "1.1.1.1:53", "1.0.0.1:53"}
-	DNSServersV6 = []string{"[2001:4860:4860::8888]:53", "[2001:4860:4860::8844]:53", "[2606:4700:4700::1111]:53", "[2606:4700:4700::1001]:53"}
-	DNSServers   = append(DNSServersV4, DNSServersV6...)
-
 	ipv4Re = regexp.MustCompile(`(\d*\.).*(\.\d*)`)
 	ipv6Re = regexp.MustCompile(`(\w*:\w*:).*(:\w*:\w*)`)
 )
@@ -47,15 +40,6 @@ func IPStringToBinary(ip string) ([]byte, error) {
 	}
 	b := addr.As16()
 	return b[:], nil
-}
-
-func BinaryToIPString(b []byte) string {
-	if len(b) < 16 {
-		return "::"
-	}
-
-	addr := netip.AddrFrom16([16]byte(b))
-	return addr.Unmap().String()
 }
 
 func GetIPFromHeader(headerValue string) (string, error) {
@@ -98,17 +82,6 @@ func IfOr[T any](a bool, x, y T) T {
 		return x
 	}
 	return y
-}
-
-func Itoa[T constraints.Integer](i T) string {
-	switch any(i).(type) {
-	case int, int8, int16, int32, int64:
-		return strconv.FormatInt(int64(i), 10)
-	case uint, uint8, uint16, uint32, uint64:
-		return strconv.FormatUint(uint64(i), 10)
-	default:
-		return ""
-	}
 }
 
 func MapValuesToSlice[Map ~map[K]V, K comparable, V any](m Map) []V {
@@ -186,7 +159,8 @@ func FirstError(errorer ...func() error) error {
 	return nil
 }
 
-func SubUintChecked[T constraints.Unsigned](a, b T) T {
+// SubUintChecked 返回 a-b，a<b 时返回 0（防无符号下溢，如 agent 重启后流量计数归零）。
+func SubUintChecked(a, b uint64) uint64 {
 	if a < b {
 		return 0
 	}

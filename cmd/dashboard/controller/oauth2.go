@@ -20,15 +20,9 @@ import (
 	"github.com/nezhahq/nezha/service/singleton"
 )
 
-// GHSA-9rc6-8cjv-rcvx: the OAuth2 callback URL is sent to the identity
-// provider and is where the authorization code lands. Deriving it from the
-// raw Host header lets an attacker who can reach this handler with a forged
-// Host (or a provider with loose redirect-URI matching) divert a victim's
-// code to their own origin and bind the victim's identity. A request Host is
-// trusted only when it is an operator-declared dashboard host (the same
-// allowlist that guards NAT routing). Otherwise the redirect is pinned to the
-// operator-declared DashboardHost; when DashboardHost is empty the operator has
-// not pinned a dashboard origin, so the request Host is passed through.
+// getRedirectURL 生成 OAuth2 回调地址（GHSA-9rc6-8cjv-rcvx）：直接信任 Host 头会让伪造 Host
+// 把授权码引到攻击者域名。仅当 Host 属于运维声明的面板主机（IsReservedDashboardHost）时沿用，
+// 否则固定为动态配置 DashboardHost；DashboardHost 为空表示未钉死面板域名，才透传请求 Host。
 func getRedirectURL(c *gin.Context) string {
 	scheme := "http://"
 	referer := c.Request.Referer()
@@ -48,7 +42,7 @@ func getRedirectURL(c *gin.Context) string {
 // @Param provider path string true "provider"
 // @Param type query int false "type" Enums(1, 2) default(1)
 // @Success 200 {object} model.Oauth2LoginResponse
-// @Router /api/v1/oauth2/{provider} [get]
+// @Router /oauth2/{provider} [get]
 func oauth2redirect(c *gin.Context) (*model.Oauth2LoginResponse, error) {
 	provider := c.Param("provider")
 	if provider == "" {
@@ -107,7 +101,7 @@ func writeOauth2StateCookie(c *gin.Context, stateKey string) {
 // @Produce json
 // @Param provider path string true "provider"
 // @Success 200 {object} any
-// @Router /api/v1/oauth2/{provider}/unbind [post]
+// @Router /oauth2/{provider}/unbind [post]
 func unbindOauth2(c *gin.Context) (any, error) {
 	provider := c.Param("provider")
 	if provider == "" {
@@ -145,7 +139,7 @@ func unbindOauth2(c *gin.Context) (any, error) {
 // @Param state query string true "state"
 // @Param code query string true "code"
 // @Success 200 {object} model.CommonResponse[any]
-// @Router /api/v1/oauth2/callback [get]
+// @Router /oauth2/callback [get]
 func oauth2callback(jwtConfig *jwt.GinJWTMiddleware) func(c *gin.Context) (any, error) {
 	return func(c *gin.Context) (any, error) {
 		callbackData := &model.Oauth2Callback{
@@ -223,26 +217,35 @@ func oauth2callback(jwtConfig *jwt.GinJWTMiddleware) func(c *gin.Context) (any, 
 	}
 }
 
+// oauth2UserInfoMaxBytes 限制 IdP 用户信息响应体大小，防异常 IdP 撑爆内存。
+const oauth2UserInfoMaxBytes = 1 << 20
+
+// exchangeOpenId 用授权码换 token 并读取 IdP 用户 ID。userinfo 非 2xx 或按 user_id_path
+// 取不到值时一律报错：空串绝不能当作合法身份，否则会写入空绑定、或命中他人的空绑定（账号接管）。
 func exchangeOpenId(c *gin.Context, o2confRaw *model.Oauth2Config,
 	callbackData *model.Oauth2Callback, redirectURL string) (string, error) {
 	o2conf := o2confRaw.Setup(redirectURL)
-
 	otk, err := o2conf.Exchange(c, callbackData.Code)
 	if err != nil {
 		return "", err
 	}
-	oauth2client := o2conf.Client(c, otk)
-	resp, err := oauth2client.Get(o2confRaw.UserInfoURL)
+	resp, err := o2conf.Client(c, otk).Get(o2confRaw.UserInfoURL)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return "", fmt.Errorf("oauth2 userinfo status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, oauth2UserInfoMaxBytes))
 	if err != nil {
 		return "", err
 	}
-
-	return gjson.GetBytes(body, o2confRaw.UserIDPath).String(), nil
+	openID := strings.TrimSpace(gjson.GetBytes(body, o2confRaw.UserIDPath).String())
+	if openID == "" {
+		return "", singleton.Localizer.ErrorT("oauth2 user id not found")
+	}
+	return openID, nil
 }
 
 func verifyState(c *gin.Context, state string) (*model.Oauth2State, error) {
@@ -262,6 +265,8 @@ func verifyState(c *gin.Context, state string) (*model.Oauth2State, error) {
 	if !ok || oauth2State.State != state {
 		return nil, singleton.Localizer.ErrorT("invalid state key")
 	}
+	// state 一次性使用：校验通过即作废，防止同一回调 URL 被重放。
+	singleton.Cache.Delete(cacheKey)
 
 	return oauth2State, nil
 }

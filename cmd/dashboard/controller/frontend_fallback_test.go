@@ -22,8 +22,7 @@ func newFrontendFallbackTestRouter(t *testing.T) *gin.Engine {
 	originalConf := singleton.Conf
 	singleton.Conf = &singleton.ConfigClass{Config: &model.Config{
 		ConfigDashboard: model.ConfigDashboard{
-			AdminTemplate: "admin-dist",
-			UserTemplate:  "user-dist",
+			UserTemplate: "user-dist",
 		},
 	}}
 	t.Cleanup(func() { singleton.Conf = originalConf })
@@ -129,5 +128,32 @@ func TestFallbackToFrontendPreservesDashboardRoutes(t *testing.T) {
 	w = performFrontendFallbackRequest(t, router, "/dashboard/assets/app.js")
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "admin asset") {
 		t.Fatalf("/dashboard/assets/app.js status = %d body = %q, want admin asset", w.Code, w.Body.String())
+	}
+}
+
+// TestFallbackToFrontendAdminIgnoresThemeDir 管理端固定内置：<ThemeDir>/admin-dist（旧版面板更新残留）不得覆盖内置产物；
+// 访客内置主题仍优先读 <ThemeDir> 下的面板更新版。
+func TestFallbackToFrontendAdminIgnoresThemeDir(t *testing.T) {
+	t.Chdir(t.TempDir())
+	router := newFrontendFallbackTestRouter(t)
+
+	themeDir := t.TempDir()
+	origThemeDir := singleton.ThemeDir
+	singleton.ThemeDir = themeDir
+	t.Cleanup(func() { singleton.ThemeDir = origThemeDir })
+	writeFrontendFallbackTestFile(t, filepath.Join(themeDir, "admin-dist/index.html"), "<html>stale admin</html>")
+	writeFrontendFallbackTestFile(t, filepath.Join(themeDir, "admin-dist/assets/app.js"), "console.log('stale admin')")
+	writeFrontendFallbackTestFile(t, filepath.Join(themeDir, "user-dist/index.html"), "<html>updated user</html>")
+
+	for target, want := range map[string]string{
+		"/dashboard/":              "admin index",
+		"/dashboard/settings":      "admin index",
+		"/dashboard/assets/app.js": "admin asset",
+		"/":                        "updated user",
+	} {
+		w := performFrontendFallbackRequest(t, router, target)
+		if body := w.Body.String(); w.Code != http.StatusOK || !strings.Contains(body, want) {
+			t.Fatalf("%s status = %d body = %q, want %q", target, w.Code, body, want)
+		}
 	}
 }

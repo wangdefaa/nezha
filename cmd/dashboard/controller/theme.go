@@ -1,10 +1,8 @@
 package controller
 
 import (
-	"io"
 	"mime/multipart"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -14,7 +12,7 @@ import (
 )
 
 // List themes
-// @Summary List themes
+// @Summary List guest themes (admin frontend is always the built-in admin-dist)
 // @Security BearerAuth
 // @Tags admin required
 // @Produce json
@@ -58,7 +56,6 @@ func uploadTheme(c *gin.Context) (uint64, error) {
 		Name:       strings.TrimSuffix(file.Filename, ".zip"),
 		Source:     model.ThemeSourceUpload,
 		VersionTag: c.PostForm("version"),
-		IsAdmin:    c.PostForm("is_admin") == "true",
 	})
 }
 
@@ -91,7 +88,7 @@ func createGithubTheme(c *gin.Context) (uint64, error) {
 	return upsertTheme(c, model.Theme{
 		Path: path, Name: name, Source: model.ThemeSourceGithub,
 		GithubRepo: f.GithubRepo, ReleaseAsset: f.ReleaseAsset, VersionTag: tag,
-		IsAdmin: f.IsAdmin, Repository: githubRepoURL(f.GithubRepo),
+		Repository: githubRepoURL(f.GithubRepo),
 	})
 }
 
@@ -133,11 +130,7 @@ func applyTheme(c *gin.Context) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if t.IsAdmin {
-		singleton.Conf.AdminTemplate = t.Path
-	} else {
-		singleton.Conf.UserTemplate = t.Path
-	}
+	singleton.Conf.UserTemplate = t.Path
 	if err := singleton.Conf.SaveDynamicToDB(singleton.DB); err != nil {
 		return nil, newGormError("%v", err)
 	}
@@ -166,7 +159,7 @@ func batchDeleteTheme(c *gin.Context) (any, error) {
 		if t.Source == model.ThemeSourceBuiltin {
 			return nil, singleton.Localizer.ErrorT("builtin theme cannot be deleted")
 		}
-		if t.Path == singleton.Conf.UserTemplate || t.Path == singleton.Conf.AdminTemplate {
+		if t.Path == singleton.Conf.UserTemplate {
 			return nil, singleton.Localizer.ErrorT("theme in use")
 		}
 	}
@@ -182,7 +175,7 @@ func batchDeleteTheme(c *gin.Context) (any, error) {
 // themeByParam 按路径参数 id 取主题。
 func themeByParam(c *gin.Context) (model.Theme, error) {
 	var t model.Theme
-	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	id, err := paramID(c)
 	if err != nil {
 		return t, err
 	}
@@ -209,24 +202,17 @@ func upsertTheme(c *gin.Context, t model.Theme) (uint64, error) {
 	return t.ID, nil
 }
 
-// saveUploadToTemp 把上传的 multipart 文件落到临时 zip。
+// saveUploadToTemp 把上传的 multipart 文件落到临时 zip（超过主题包上限即报错，不无限写盘）。
 func saveUploadToTemp(file *multipart.FileHeader) (string, error) {
-	dst, err := os.CreateTemp("", "nz-upload-*.zip")
-	if err != nil {
-		return "", err
+	if file.Size > singleton.MaxThemeArchiveSize {
+		return "", singleton.ErrThemeArchiveTooLarge
 	}
-	defer dst.Close()
 	src, err := file.Open()
 	if err != nil {
-		os.Remove(dst.Name())
 		return "", err
 	}
 	defer src.Close()
-	if _, err := io.Copy(dst, src); err != nil {
-		os.Remove(dst.Name())
-		return "", err
-	}
-	return dst.Name(), nil
+	return singleton.SaveLimitedTemp(src, "nz-upload-*.zip")
 }
 
 func githubRepoName(repo string) string {

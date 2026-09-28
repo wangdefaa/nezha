@@ -85,31 +85,6 @@ func restScopeMiddleware(scope string) gin.HandlerFunc {
 	}
 }
 
-// restScopeAllOf is the multi-scope variant of restScopeMiddleware. It
-// gates on EVERY listed scope, used by routes whose semantics span more
-// than one capability — file-manager sessions read, write AND delete
-// files, so a PAT that only carries nezha:server:write must NOT be allowed
-// to open one. JWT callers pass through unchanged.
-func restScopeAllOf(scopes ...string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		tok := APITokenFromContext(c)
-		if tok == nil {
-			c.Next()
-			return
-		}
-		for _, scope := range scopes {
-			if scope == "" || !tok.HasScope(scope) {
-				c.AbortWithStatusJSON(http.StatusForbidden, model.CommonResponse[any]{
-					Success: false,
-					Error:   "ApiErrorForbidden: api token lacks scope " + scope,
-				})
-				return
-			}
-		}
-		c.Next()
-	}
-}
-
 // restPATForbiddenMiddleware 在「自我管理」类端点上显式拒绝 PAT。
 //
 // 这些端点（profile / api-tokens / oauth2 绑定 / refresh-token）一旦允许 PAT

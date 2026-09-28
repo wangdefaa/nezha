@@ -100,41 +100,6 @@ func TestIPStringToBinary(t *testing.T) {
 	}
 }
 
-func TestBinaryToIPString(t *testing.T) {
-	cases := []struct {
-		binary []byte
-		want   string
-	}{
-		// IPv4 地址（IPv4 映射的 IPv6 地址格式）
-		{
-			binary: []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 192, 168, 1, 1},
-			want:   "192.168.1.1",
-		},
-		// 其他测试用例
-		{
-			binary: []byte{32, 1, 13, 184, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 104},
-			want:   "2001:db8::68",
-		},
-		// 全零值
-		{
-			binary: []byte{},
-			want:   "::",
-		},
-		// IPv4 映射的 IPv6 地址
-		{
-			binary: []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 127, 0, 0, 1},
-			want:   "127.0.0.1",
-		},
-	}
-
-	for _, c := range cases {
-		got := BinaryToIPString(c.binary)
-		if got != c.want {
-			t.Errorf("BinaryToIPString(%v) = %q, 期望 %q", c.binary, got, c.want)
-		}
-	}
-}
-
 func TestUnique(t *testing.T) {
 	cases := []struct {
 		input  []string

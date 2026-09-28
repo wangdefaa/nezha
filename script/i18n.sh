@@ -38,7 +38,7 @@ generate() {
 
 generate_template() {
 	mapfile -t src < <(find . -name "*.go" | sort)
-	xgettext -C --add-comments=TRANSLATORS: -kErrorT -kT -kTf -kN:1,2 --from-code=UTF-8 -o $TEMPLATE "${src[@]}"
+	xgettext -C --add-comments=TRANSLATORS: -kErrorT -kT -kTf --from-code=UTF-8 -o $TEMPLATE "${src[@]}"
 }
 
 generate_en() {

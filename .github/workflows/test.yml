@@ -1,52 +1,116 @@
-name: Run Tests
+# 后端质量门禁：tidy / gofmt / vet / 单测（race + shuffle）/ 线上同构构建 + gosec / govulncheck。
+# 同时以 workflow_call 被 release.yml 复用：打 tag 时必须先过这里才会发版。
+# 不加 schedule：公开仓库 60 天无活动会把带 schedule 的 workflow 整个自动停用（CodeQL 已因此停用），
+# 那样 push / PR 也不会再跑。依赖漏洞的持续提醒改用仓库设置里的 Dependabot alerts（不需要 workflow）。
+name: Test
 
 on:
   push:
-    paths:
-      - "**.go"
-      - "go.mod"
-      - "go.sum"
-      - "resource/**"
-      - ".github/workflows/test.yml"
+    branches:
+      - master
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+      - ".gitignore"
+      - ".gitattributes"
+      - "config.yaml.example"
   pull_request:
     branches:
       - master
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # 组名固定 test- 前缀：被 release.yml 调用时 github.workflow 取的是调用方名字，避免与其组名相同而死锁
+  group: test-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  tests:
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [ubuntu, windows, macos]
-
-    runs-on: ${{ matrix.os }}-latest
-    env:
-      GO111MODULE: on
+  test:
+    name: Test & lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7.0.1
         with:
-          go-version: "1.26.x"
+          persist-credentials: false
 
-      - name: generate swagger docs
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Prepare build inputs
         run: |
-          go install github.com/swaggo/swag/cmd/swag@latest
-          touch ./cmd/dashboard/user-dist/a
-          touch ./cmd/dashboard/admin-dist/a
+          # main.go 的 //go:embed *-dist 要求目录里至少有一个非点号文件（.gitkeep 不算）；
+          # 测试与 vet 不需要真实前端，占位即可。发版在 release.yml 里用 fetch-frontends.sh 拉真实产物。
+          for d in admin-dist user-dist; do
+            mkdir -p "cmd/dashboard/$d"
+            touch "cmd/dashboard/$d/placeholder"
+          done
+          # controller.go import 了 swag 生成的 cmd/dashboard/docs（已 gitignore）；版本与 go.mod 的 swaggo/swag 对齐
+          go install github.com/swaggo/swag/cmd/swag@v1.16.6
           swag init --pd -d cmd/dashboard -g main.go -o cmd/dashboard/docs
 
-      - name: Unit test
+      - name: go.mod / go.sum are tidy
+        run: go mod tidy -diff
+
+      - name: gofmt
         run: |
-          go test -v ./...
+          unformatted=$(git ls-files -z '*.go' | xargs -0 gofmt -l)
+          if [ -n "$unformatted" ]; then
+            echo "::error::以下文件未 gofmt，请运行 gofmt -w："
+            echo "$unformatted"
+            exit 1
+          fi
 
-      - name: Build test
-        run: go build -v ./cmd/dashboard
+      - name: go vet
+        run: go vet ./...
 
-      - name: Run Gosec Security Scanner
-        if: runner.os == 'Linux'
-        uses: securego/gosec@master
+      - name: Unit test (race + shuffle)
+        # 不要设 CGO_ENABLED=0：linux 上 -race 需要 cgo（sqlite 测试已改用纯 Go 驱动，本身不依赖 cgo）
+        run: go test -race -shuffle=on -count=1 ./...
+
+      - name: Build (same as production)
         env:
-          GOTOOLCHAIN: auto
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: go build -trimpath -tags go_json -o /dev/null ./cmd/dashboard
+
+  security:
+    name: gosec & govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
         with:
-          args: -exclude-generated --exclude=G104,G115,G117,G203,G402,G703,G704 ./...
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Prepare build inputs
+        run: |
+          for d in admin-dist user-dist; do
+            mkdir -p "cmd/dashboard/$d"
+            touch "cmd/dashboard/$d/placeholder"
+          done
+          go install github.com/swaggo/swag/cmd/swag@v1.16.6
+          swag init --pd -d cmd/dashboard -g main.go -o cmd/dashboard/docs
+
+      - name: gosec
+        # 固定版本，替代浮动的 securego/gosec@master。
+        # 相比原配置不再排除 G703（路径穿越污点）/ G704（SSRF 污点）：删掉 CodeQL 后由它们接替这两类数据流检查。
+        # v2.29.0 在当前代码上唯一的命中是 ws.go 里 debug 模式对 Host 做 LookupHost，已用 #nosec G704 标注。
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
+          gosec -exclude-generated -exclude=G104,G115,G117,G203,G402 ./...
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          govulncheck ./...

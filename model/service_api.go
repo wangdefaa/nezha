@@ -29,13 +29,6 @@ type ServiceResponseItem struct {
 	Down        *[30]uint64  `json:"down,omitempty"`
 }
 
-func (r ServiceResponseItem) TotalUptime() float32 {
-	if r.TotalUp+r.TotalDown == 0 {
-		return 0
-	}
-	return float32(r.TotalUp) / (float32(r.TotalUp + r.TotalDown)) * 100
-}
-
 type CycleTransferStats struct {
 	Name       string               `json:"name"`
 	From       time.Time            `json:"from"`

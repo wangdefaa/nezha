@@ -45,7 +45,6 @@ tsdb:
 #   listen_port: 443
 #   tls_cert_path: /path/fullchain.pem
 #   tls_key_path: /path/privkey.pem
-#   insecure_tls: false
 
 # ---- 运行时内存上限(MB,0 表示不限制)----
 # memory:

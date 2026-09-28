@@ -2,7 +2,6 @@ package controller
 
 import (
 	"slices"
-	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -210,31 +209,17 @@ func batchDeleteUser(c *gin.Context) (any, error) {
 // @Security BearerAuth
 // @Schemes
 // @Description List online users
-// @Tags auth required
+// @Tags admin required
 // @Param limit query uint false "Page limit"
 // @Param offset query uint false "Page offset"
 // @Produce json
 // @Success 200 {object} model.PaginatedResponse[[]model.OnlineUser, model.OnlineUser]
 // @Router /online-user [get]
 func listOnlineUser(c *gin.Context) (*model.Value[[]*model.OnlineUser], error) {
-	var isAdmin bool
-	u, ok := c.Get(model.CtxKeyAuthorizedUser)
-	if ok {
-		isAdmin = u.(*model.User).Role.IsAdmin()
-	}
-	limit, err := strconv.Atoi(c.Query("limit"))
-	if err != nil || limit < 1 {
-		limit = 25
-	}
-
-	offset, err := strconv.Atoi(c.Query("offset"))
-	if err != nil || offset < 0 {
-		offset = 0
-	}
-
+	limit, offset := parsePagination(c)
 	all := onlineSessions()
 	users := paginateOnline(all, offset, limit)
-	if !isAdmin {
+	if !callerIsAdmin(c) {
 		users = desensitizeOnline(users)
 	}
 
@@ -270,11 +255,8 @@ func paginateOnline(all []*model.OnlineUser, offset, limit int) []*model.OnlineU
 	if offset >= len(all) {
 		return nil
 	}
-	end := offset + limit
-	if end > len(all) {
-		end = len(all)
-	}
-	return all[offset:end]
+	// 用 len(all)-offset 比较而不是 offset+limit，避免超大 limit 相加溢出成负数导致切片越界 panic
+	return all[offset : offset+min(limit, len(all)-offset)]
 }
 
 // desensitizeOnline 对非管理员脱敏在线用户 IP。

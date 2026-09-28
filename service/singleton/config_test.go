@@ -52,3 +52,20 @@ func TestInitConfigFromPathRotatesJWTSecretKey(t *testing.T) {
 		t.Fatalf("saved config did not persist jwt secret key marker: %s", saved)
 	}
 }
+
+// 回归：清空忽略列表后旧集合必须失效；逗号后带空格的 ID 不能被丢弃。
+func TestUpdateIgnoredIPNotificationID(t *testing.T) {
+	c := &ConfigClass{Config: &model.Config{}}
+	c.IgnoredIPNotification = "1, 2,3"
+	c.updateIgnoredIPNotificationID()
+	for _, id := range []uint64{1, 2, 3} {
+		if !c.IgnoredIPNotificationServerIDs[id] {
+			t.Fatalf("id %d missing from %v", id, c.IgnoredIPNotificationServerIDs)
+		}
+	}
+	c.IgnoredIPNotification = ""
+	c.updateIgnoredIPNotificationID()
+	if len(c.IgnoredIPNotificationServerIDs) != 0 {
+		t.Fatalf("ids not cleared: %v", c.IgnoredIPNotificationServerIDs)
+	}
+}

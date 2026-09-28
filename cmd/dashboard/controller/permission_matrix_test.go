@@ -225,8 +225,8 @@ func TestShowServiceFiltersCycleTransferStatsLikeServerList(t *testing.T) {
 	assert.NoError(t, singleton.DB.Create(&model.Server{Common: model.Common{ID: 3, UserID: 200}, Name: "hidden member server", UUID: "hidden-member-server", HideForGuest: true}).Error)
 	singleton.ServerShared = singleton.NewServerClass()
 
-	assert.NoError(t, singleton.DB.Create(&model.Service{Common: model.Common{ID: 10, UserID: 1}, Name: "shown service"}).Error)
-	assert.NoError(t, singleton.DB.Create(&model.Service{Common: model.Common{ID: 11, UserID: 1}, Name: "hidden service", HideForGuest: true}).Error)
+	assert.NoError(t, singleton.DB.Create(&model.Service{Common: model.Common{ID: 10, UserID: 1}, Name: "shown service", Type: model.TaskTypeTCPPing}).Error)
+	assert.NoError(t, singleton.DB.Create(&model.Service{Common: model.Common{ID: 11, UserID: 1}, Name: "hidden service", Type: model.TaskTypeTCPPing, HideForGuest: true}).Error)
 
 	originalServiceSentinel := singleton.ServiceSentinelShared
 	serviceSentinel, err := singleton.NewServiceSentinel(make(chan *model.Service, 2))
@@ -431,4 +431,3 @@ func TestListNotificationGroupAdminSeesAll(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{"admin group", "member group"}, names)
 }
-

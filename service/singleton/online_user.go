@@ -1,11 +1,9 @@
 package singleton
 
 import (
-	"slices"
 	"sync"
 
 	"github.com/nezhahq/nezha/model"
-	"github.com/nezhahq/nezha/pkg/utils"
 )
 
 var (
@@ -41,22 +39,6 @@ func BlockByIPs(ipList []string) error {
 	}
 
 	return nil
-}
-
-func GetOnlineUsers(limit, offset int) []*model.OnlineUser {
-	OnlineUserMapLock.Lock()
-	defer OnlineUserMapLock.Unlock()
-	users := utils.MapValuesToSlice(OnlineUserMap)
-	slices.SortFunc(users, func(i, j *model.OnlineUser) int {
-		return i.ConnectedAt.Compare(j.ConnectedAt)
-	})
-	if offset > len(users) {
-		return nil
-	}
-	if offset+limit > len(users) {
-		return users[offset:]
-	}
-	return users[offset : offset+limit]
 }
 
 func GetOnlineUserCount() int {

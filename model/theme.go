@@ -9,8 +9,12 @@ const (
 	ThemeSourceGithub  ThemeSource = "github"  // 从 GitHub release 拉取
 )
 
-// Theme 主题清单（仅元信息）。文件内容存磁盘 <ThemeDir>/<Path>/，内置主题则由二进制 embed 提供。
+// DefaultUserTemplate 内置访客主题目录名（embed 的 user-dist）：缺省配置与主题失效时都回落到它。
+const DefaultUserTemplate = "user-dist"
+
+// Theme 访客主题清单（仅元信息）。文件内容存磁盘 <ThemeDir>/<Path>/，内置主题则由二进制 embed 提供。
 // 取代写死的 frontend-templates.yaml 成为运行期权威清单，从而支持后台动态增删主题、无需重新发版。
+// 管理端固定使用内置 admin-dist，不入库、不可经面板更新。
 type Theme struct {
 	Common
 	Path         string `gorm:"uniqueIndex;size:191" json:"path"` // 磁盘目录名 / 唯一标识
@@ -21,7 +25,6 @@ type Theme struct {
 	VersionTag   string `json:"version_tag,omitempty"`
 	Author       string `json:"author,omitempty"`
 	Repository   string `json:"repository,omitempty"`
-	IsAdmin      bool   `json:"is_admin"`
 	IsOfficial   bool   `json:"is_official"`
 }
 
@@ -33,7 +36,6 @@ func (t *Theme) ToFrontendTemplate() FrontendTemplate {
 		Repository: t.Repository,
 		Author:     t.Author,
 		Version:    t.VersionTag,
-		IsAdmin:    t.IsAdmin,
 		IsOfficial: t.IsOfficial,
 	}
 }
@@ -43,5 +45,4 @@ type ThemeGithubForm struct {
 	GithubRepo   string `json:"github_repo" binding:"required"`   // owner/repo 或完整 URL
 	ReleaseAsset string `json:"release_asset" binding:"required"` // release 资产文件名（.zip）
 	Name         string `json:"name,omitempty"`                   // 留空用 repo 名
-	IsAdmin      bool   `json:"is_admin,omitempty"`
 }

@@ -9,10 +9,8 @@ type SettingForm struct {
 	InstallHost                 string `json:"install_host,omitempty" validate:"optional"`
 	DashboardHost               string `json:"dashboard_host,omitempty" validate:"optional"`
 	CustomCode                  string `json:"custom_code,omitempty" validate:"optional"`
-	CustomCodeDashboard         string `json:"custom_code_dashboard,omitempty" validate:"optional"`
 	WebRealIPHeader             string `json:"web_real_ip_header,omitempty" validate:"optional"`   // 前端真实IP
 	AgentRealIPHeader           string `json:"agent_real_ip_header,omitempty" validate:"optional"` // Agent真实IP
-	UserTemplate                string `json:"user_template,omitempty" validate:"optional"`
 	InstallScriptLinux          string `json:"install_script_linux,omitempty" validate:"optional"`
 	InstallScriptWindows        string `json:"install_script_windows,omitempty" validate:"optional"`
 
@@ -40,7 +38,7 @@ type FrontendTemplate struct {
 	Version      string `json:"version,omitempty"`
 	GithubRepo   string `json:"github_repo,omitempty"`   // 内置主题的 GitHub 来源（owner/repo），用于「拉取最新」
 	ReleaseAsset string `json:"release_asset,omitempty"` // release 资产文件名（.zip）
-	IsAdmin      bool   `json:"is_admin,omitempty"`
+	IsAdmin      bool   `json:"is_admin,omitempty"`      // 仅 yaml 标记管理端条目（构建期拉取嵌入），不入库、不可面板管理
 	IsOfficial   bool   `json:"is_official,omitempty"`
 }
 

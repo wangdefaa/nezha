@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
 	"github.com/nezhahq/nezha/model"
@@ -116,7 +116,7 @@ func TestTenancy_UpdateNotificationGroup_ForeignOwnerRejected(t *testing.T) {
 	require.NoError(t, singleton.DB.Create(&foreign).Error)
 
 	c := ctxAsMemberWithBody(10, map[string]any{
-		"name":         "hijacked",
+		"name":          "hijacked",
 		"notifications": []uint64{},
 	})
 	c.Params = gin.Params{{Key: "id", Value: itoa(foreign.ID)}}

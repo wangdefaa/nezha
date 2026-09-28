@@ -2,7 +2,6 @@ package controller
 
 import (
 	"slices"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -70,7 +69,7 @@ func createNotificationGroup(c *gin.Context) (uint64, error) {
 	if err := c.ShouldBindJSON(&ngf); err != nil {
 		return 0, err
 	}
-	ngf.Notifications = slices.Compact(ngf.Notifications)
+	ngf.Notifications = uniqueIDs(ngf.Notifications)
 
 	if !singleton.NotificationShared.CheckPermission(c, slices.Values(ngf.Notifications)) {
 		return 0, singleton.Localizer.ErrorT("permission denied")
@@ -82,31 +81,15 @@ func createNotificationGroup(c *gin.Context) (uint64, error) {
 	ng.Name = ngf.Name
 	ng.UserID = uid
 
-	var count int64
-	if err := singleton.DB.Model(&model.Notification{}).Where("id in (?)", ngf.Notifications).Count(&count).Error; err != nil {
-		return 0, newGormError("%v", err)
-	}
-
-	if count != int64(len(ngf.Notifications)) {
-		return 0, singleton.Localizer.ErrorT("have invalid notification id")
+	if err := ensureIDsExist(&model.Notification{}, ngf.Notifications, singleton.Localizer.ErrorT("have invalid notification id")); err != nil {
+		return 0, err
 	}
 
 	err := singleton.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&ng).Error; err != nil {
 			return err
 		}
-		for _, n := range ngf.Notifications {
-			if err := tx.Create(&model.NotificationGroupNotification{
-				Common: model.Common{
-					UserID: uid,
-				},
-				NotificationGroupID: ng.ID,
-				NotificationID:      n,
-			}).Error; err != nil {
-				return err
-			}
-		}
-		return nil
+		return createNotificationGroupMembers(tx, uid, ng.ID, ngf.Notifications)
 	})
 	if err != nil {
 		return 0, newGormError("%v", err)
@@ -129,9 +112,7 @@ func createNotificationGroup(c *gin.Context) (uint64, error) {
 // @Success 200 {object} model.CommonResponse[any]
 // @Router /notification-group/{id} [patch]
 func updateNotificationGroup(c *gin.Context) (any, error) {
-	idStr := c.Param("id")
-
-	id, err := strconv.ParseUint(idStr, 10, 64)
+	id, err := paramID(c)
 	if err != nil {
 		return nil, err
 	}
@@ -155,14 +136,10 @@ func updateNotificationGroup(c *gin.Context) (any, error) {
 	}
 
 	ngDB.Name = ngf.Name
-	ngf.Notifications = slices.Compact(ngf.Notifications)
+	ngf.Notifications = uniqueIDs(ngf.Notifications)
 
-	var count int64
-	if err := singleton.DB.Model(&model.Notification{}).Where("id in (?)", ngf.Notifications).Count(&count).Error; err != nil {
-		return nil, newGormError("%v", err)
-	}
-	if count != int64(len(ngf.Notifications)) {
-		return nil, singleton.Localizer.ErrorT("have invalid notification id")
+	if err := ensureIDsExist(&model.Notification{}, ngf.Notifications, singleton.Localizer.ErrorT("have invalid notification id")); err != nil {
+		return nil, err
 	}
 
 	uid := getUid(c)
@@ -174,19 +151,7 @@ func updateNotificationGroup(c *gin.Context) (any, error) {
 		if err := tx.Unscoped().Delete(&model.NotificationGroupNotification{}, "notification_group_id = ?", id).Error; err != nil {
 			return err
 		}
-
-		for _, n := range ngf.Notifications {
-			if err := tx.Create(&model.NotificationGroupNotification{
-				Common: model.Common{
-					UserID: uid,
-				},
-				NotificationGroupID: ngDB.ID,
-				NotificationID:      n,
-			}).Error; err != nil {
-				return err
-			}
-		}
-		return nil
+		return createNotificationGroupMembers(tx, uid, ngDB.ID, ngf.Notifications)
 	})
 	if err != nil {
 		return nil, newGormError("%v", err)
@@ -194,6 +159,17 @@ func updateNotificationGroup(c *gin.Context) (any, error) {
 
 	singleton.NotificationShared.UpdateGroup(&ngDB, ngf.Notifications)
 	return nil, nil
+}
+
+// createNotificationGroupMembers 在事务内逐条写入通知分组成员。
+func createNotificationGroupMembers(tx *gorm.DB, uid, groupID uint64, notifications []uint64) error {
+	for _, n := range notifications {
+		member := model.NotificationGroupNotification{Common: model.Common{UserID: uid}, NotificationGroupID: groupID, NotificationID: n}
+		if err := tx.Create(&member).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Batch delete notification group
@@ -224,20 +200,8 @@ func batchDeleteNotificationGroup(c *gin.Context) (any, error) {
 		}
 	}
 
-	err := singleton.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Unscoped().Delete(&model.NotificationGroup{}, "id in (?)", ngn).Error; err != nil {
-			return err
-		}
-		if err := tx.Unscoped().Delete(&model.NotificationGroupNotification{}, "notification_group_id in (?)", ngn).Error; err != nil {
-			return err
-		}
-		return nil
-	})
-
-	if err != nil {
+	if err := singleton.DeleteNotificationGroups(ngn); err != nil {
 		return nil, newGormError("%v", err)
 	}
-
-	singleton.NotificationShared.DeleteGroup(ngn)
 	return nil, nil
 }

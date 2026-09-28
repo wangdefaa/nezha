@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
 	"github.com/nezhahq/nezha/model"
@@ -221,7 +221,8 @@ func TestLoadMonthlyStatusFromTSDB(t *testing.T) {
 	services := []*model.Service{{Common: model.Common{ID: serviceID}}}
 	ss := newTestSentinel([]uint64{serviceID})
 
-	yesterday := today.Add(-25 * time.Hour)
+	// 昨天 23:00 起的样本应落在下标 28（下标 29 是今天）；以前误用 25 小时前当「昨天」，掩盖了错位一天的问题。
+	yesterday := today.Add(-1 * time.Hour)
 	for i := 0; i < 5; i++ {
 		ts := yesterday.Add(time.Duration(i) * time.Minute)
 		require.NoError(t, db.WriteServiceMetrics(&tsdb.ServiceMetrics{
@@ -242,20 +243,44 @@ func TestLoadMonthlyStatusFromTSDB(t *testing.T) {
 		}))
 	}
 
+	// 前天与 29 天前各一条：分别落在下标 27 与 0
+	for _, ago := range []time.Duration{25 * time.Hour, (28*24 + 12) * time.Hour} {
+		require.NoError(t, db.WriteServiceMetrics(&tsdb.ServiceMetrics{
+			ServiceID: serviceID, ServerID: 1, Timestamp: today.Add(-ago), Delay: 30, Successful: true,
+		}))
+	}
+
 	db.Flush()
 
 	ss.loadMonthlyStatusFromTSDB(services, today)
 
 	ms := ss.monthlyStatus[serviceID]
-	// day -1: dayIndex 28
 	assert.Equal(t, uint64(5), ms.Up[28])
 	assert.Equal(t, uint64(3), ms.Down[28])
-	assert.Equal(t, uint64(5), ms.TotalUp)
-	assert.Equal(t, uint64(3), ms.TotalDown)
 	assert.Greater(t, ms.Delay[28], float64(0))
+	assert.Equal(t, uint64(1), ms.Up[27])
+	assert.Equal(t, uint64(1), ms.Up[0])
+	assert.Equal(t, uint64(7), ms.TotalUp)
+	assert.Equal(t, uint64(3), ms.TotalDown)
 
 	// today (index 29) should be untouched
 	assert.Equal(t, uint64(0), ms.Up[29])
+}
+
+func TestStatusOf(t *testing.T) {
+	cases := []struct {
+		up, down uint64
+		want     uint8
+	}{
+		{0, 0, StatusNoData},
+		{0, 5, StatusDown},
+		{80, 20, StatusDown},
+		{90, 10, StatusLowAvailability},
+		{96, 4, StatusGood},
+	}
+	for _, c := range cases {
+		assert.Equal(t, c.want, statusOf(serviceResponseData{Up: c.up, Down: c.down}), "up=%d down=%d", c.up, c.down)
+	}
 }
 
 func TestLoadTodayStatsFromTSDB(t *testing.T) {

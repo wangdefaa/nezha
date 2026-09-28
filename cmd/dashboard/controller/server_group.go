@@ -2,7 +2,6 @@ package controller
 
 import (
 	"slices"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -28,7 +27,7 @@ func listServerGroup(c *gin.Context) ([]*model.ServerGroupResponseItem, error) {
 
 	_, isMember := c.Get(model.CtxKeyAuthorizedUser)
 	isAdmin := isMember && callerIsAdmin(c)
-	pat := patAccessorFromContext(c)
+	pat := model.PATFromContext(c)
 	patLimited := pat != nil && patHasServerWhitelist(c)
 
 	visibleServerIDs := make(map[uint64]struct{})
@@ -94,7 +93,7 @@ func createServerGroup(c *gin.Context) (uint64, error) {
 	if err := c.ShouldBindJSON(&sgf); err != nil {
 		return 0, err
 	}
-	sgf.Servers = slices.Compact(sgf.Servers)
+	sgf.Servers = uniqueIDs(sgf.Servers)
 
 	if !singleton.ServerShared.CheckPermission(c, slices.Values(sgf.Servers)) {
 		return 0, singleton.Localizer.ErrorT("permission denied")
@@ -106,30 +105,15 @@ func createServerGroup(c *gin.Context) (uint64, error) {
 	sg.Name = sgf.Name
 	sg.UserID = uid
 
-	var count int64
-	if err := singleton.DB.Model(&model.Server{}).Where("id in (?)", sgf.Servers).Count(&count).Error; err != nil {
-		return 0, newGormError("%v", err)
-	}
-	if count != int64(len(sgf.Servers)) {
-		return 0, singleton.Localizer.ErrorT("have invalid server id")
+	if err := ensureIDsExist(&model.Server{}, sgf.Servers, singleton.Localizer.ErrorT("have invalid server id")); err != nil {
+		return 0, err
 	}
 
 	err := singleton.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&sg).Error; err != nil {
 			return err
 		}
-		for _, s := range sgf.Servers {
-			if err := tx.Create(&model.ServerGroupServer{
-				Common: model.Common{
-					UserID: uid,
-				},
-				ServerGroupId: sg.ID,
-				ServerId:      s,
-			}).Error; err != nil {
-				return err
-			}
-		}
-		return nil
+		return createServerGroupMembers(tx, uid, sg.ID, sgf.Servers)
 	})
 	if err != nil {
 		return 0, newGormError("%v", err)
@@ -151,9 +135,7 @@ func createServerGroup(c *gin.Context) (uint64, error) {
 // @Success 200 {object} model.CommonResponse[any]
 // @Router /server-group/{id} [patch]
 func updateServerGroup(c *gin.Context) (any, error) {
-	idStr := c.Param("id")
-
-	id, err := strconv.ParseUint(idStr, 10, 64)
+	id, err := paramID(c)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +144,7 @@ func updateServerGroup(c *gin.Context) (any, error) {
 	if err := c.ShouldBindJSON(&sg); err != nil {
 		return nil, err
 	}
-	sg.Servers = slices.Compact(sg.Servers)
+	sg.Servers = uniqueIDs(sg.Servers)
 
 	if !singleton.ServerShared.CheckPermission(c, slices.Values(sg.Servers)) {
 		return nil, singleton.Localizer.ErrorT("permission denied")
@@ -183,12 +165,8 @@ func updateServerGroup(c *gin.Context) (any, error) {
 
 	sgDB.Name = sg.Name
 
-	var count int64
-	if err := singleton.DB.Model(&model.Server{}).Where("id in (?)", sg.Servers).Count(&count).Error; err != nil {
+	if err := ensureIDsExist(&model.Server{}, sg.Servers, singleton.Localizer.ErrorT("have invalid server id")); err != nil {
 		return nil, err
-	}
-	if count != int64(len(sg.Servers)) {
-		return nil, singleton.Localizer.ErrorT("have invalid server id")
 	}
 
 	uid := getUid(c)
@@ -200,25 +178,24 @@ func updateServerGroup(c *gin.Context) (any, error) {
 		if err := tx.Unscoped().Delete(&model.ServerGroupServer{}, "server_group_id = ?", id).Error; err != nil {
 			return err
 		}
-
-		for _, s := range sg.Servers {
-			if err := tx.Create(&model.ServerGroupServer{
-				Common: model.Common{
-					UserID: uid,
-				},
-				ServerGroupId: sgDB.ID,
-				ServerId:      s,
-			}).Error; err != nil {
-				return err
-			}
-		}
-		return nil
+		return createServerGroupMembers(tx, uid, sgDB.ID, sg.Servers)
 	})
 	if err != nil {
 		return nil, newGormError("%v", err)
 	}
 
 	return nil, nil
+}
+
+// createServerGroupMembers 在事务内逐条写入分组成员（空列表时不写，避免 GORM 空切片报错）。
+func createServerGroupMembers(tx *gorm.DB, uid, groupID uint64, servers []uint64) error {
+	for _, s := range servers {
+		member := model.ServerGroupServer{Common: model.Common{UserID: uid}, ServerGroupId: groupID, ServerId: s}
+		if err := tx.Create(&member).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Batch delete server group
@@ -249,7 +226,7 @@ func batchDeleteServerGroup(c *gin.Context) (any, error) {
 		}
 	}
 
-	if pat := patAccessorFromContext(c); pat != nil && patHasServerWhitelist(c) {
+	if pat := model.PATFromContext(c); pat != nil && patHasServerWhitelist(c) {
 		var members []model.ServerGroupServer
 		if err := singleton.DB.Where("server_group_id in (?)", sgs).Find(&members).Error; err != nil {
 			return nil, err
@@ -261,19 +238,8 @@ func batchDeleteServerGroup(c *gin.Context) (any, error) {
 		}
 	}
 
-	err := singleton.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Unscoped().Delete(&model.ServerGroup{}, "id in (?)", sgs).Error; err != nil {
-			return err
-		}
-		if err := tx.Unscoped().Delete(&model.ServerGroupServer{}, "server_group_id in (?)", sgs).Error; err != nil {
-			return err
-		}
-		return nil
-	})
-
-	if err != nil {
-		return nil, newGormError("%v", err)
+	if err := deleteWithMembers(&model.ServerGroup{}, &model.ServerGroupServer{}, "server_group_id in (?)", sgs); err != nil {
+		return nil, err
 	}
-
 	return nil, nil
 }

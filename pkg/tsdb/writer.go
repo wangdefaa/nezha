@@ -1,7 +1,6 @@
 package tsdb
 
 import (
-	"fmt"
 	"strconv"
 	"sync"
 	"time"
@@ -47,15 +46,26 @@ func (w *bufferedWriter) flushLoop() {
 }
 
 func (w *bufferedWriter) write(rows []storage.MetricRow) {
+	if !w.db.acceptsWrites() {
+		w.discard()
+		return
+	}
+
 	w.mu.Lock()
 	w.buffer = append(w.buffer, rows...)
 	if len(w.buffer) >= w.maxSize {
 		rows := w.buffer
 		w.buffer = make([]storage.MetricRow, 0, w.maxSize)
 		w.mu.Unlock()
-		w.db.storage.AddRows(rows, 64)
+		w.db.addRowsSafely(rows)
 		return
 	}
+	w.mu.Unlock()
+}
+
+func (w *bufferedWriter) discard() {
+	w.mu.Lock()
+	w.buffer = make([]storage.MetricRow, 0, w.maxSize)
 	w.mu.Unlock()
 }
 
@@ -69,7 +79,7 @@ func (w *bufferedWriter) flush() {
 	w.buffer = make([]storage.MetricRow, 0, w.maxSize)
 	w.mu.Unlock()
 
-	w.db.storage.AddRows(rows, 64)
+	w.db.addRowsSafely(rows)
 }
 
 func (w *bufferedWriter) stop() {
@@ -135,66 +145,62 @@ type ServiceMetrics struct {
 }
 
 func (db *TSDB) WriteServerMetrics(m *ServerMetrics) error {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-	if db.closed {
-		return fmt.Errorf("TSDB is closed")
-	}
-
-	ts := m.Timestamp.UnixMilli()
-	serverIDStr := strconv.FormatUint(m.ServerID, 10)
-
-	rows := []storage.MetricRow{
-		makeServerMetricRow(MetricServerCPU, serverIDStr, ts, m.CPU),
-		makeServerMetricRow(MetricServerMemory, serverIDStr, ts, float64(m.MemUsed)),
-		makeServerMetricRow(MetricServerSwap, serverIDStr, ts, float64(m.SwapUsed)),
-		makeServerMetricRow(MetricServerDisk, serverIDStr, ts, float64(m.DiskUsed)),
-		makeServerMetricRow(MetricServerNetInSpeed, serverIDStr, ts, float64(m.NetInSpeed)),
-		makeServerMetricRow(MetricServerNetOutSpeed, serverIDStr, ts, float64(m.NetOutSpeed)),
-		makeServerMetricRow(MetricServerNetInTransfer, serverIDStr, ts, float64(m.NetInTransfer)),
-		makeServerMetricRow(MetricServerNetOutTransfer, serverIDStr, ts, float64(m.NetOutTransfer)),
-		makeServerMetricRow(MetricServerLoad1, serverIDStr, ts, m.Load1),
-		makeServerMetricRow(MetricServerLoad5, serverIDStr, ts, m.Load5),
-		makeServerMetricRow(MetricServerLoad15, serverIDStr, ts, m.Load15),
-		makeServerMetricRow(MetricServerTCPConn, serverIDStr, ts, float64(m.TCPConnCount)),
-		makeServerMetricRow(MetricServerUDPConn, serverIDStr, ts, float64(m.UDPConnCount)),
-		makeServerMetricRow(MetricServerProcessCount, serverIDStr, ts, float64(m.ProcessCount)),
-		makeServerMetricRow(MetricServerUptime, serverIDStr, ts, float64(m.Uptime)),
-	}
-
-	if db.writer != nil {
-		db.writer.write(rows)
-	} else {
-		db.storage.AddRows(rows, 64)
-	}
-	return nil
+	return db.writeRows(serverMetricRows(m))
 }
 
 func (db *TSDB) WriteServiceMetrics(m *ServiceMetrics) error {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-	if db.closed {
-		return fmt.Errorf("TSDB is closed")
-	}
+	return db.writeRows(serviceMetricRows(m))
+}
 
+// serverMetricRows 把一条服务器指标展开成 15 个时序样本。
+func serverMetricRows(m *ServerMetrics) []storage.MetricRow {
 	ts := m.Timestamp.UnixMilli()
-	serviceIDStr := strconv.FormatUint(m.ServiceID, 10)
-	serverIDStr := strconv.FormatUint(m.ServerID, 10)
+	id := strconv.FormatUint(m.ServerID, 10)
+	return []storage.MetricRow{
+		makeServerMetricRow(MetricServerCPU, id, ts, m.CPU),
+		makeServerMetricRow(MetricServerMemory, id, ts, float64(m.MemUsed)),
+		makeServerMetricRow(MetricServerSwap, id, ts, float64(m.SwapUsed)),
+		makeServerMetricRow(MetricServerDisk, id, ts, float64(m.DiskUsed)),
+		makeServerMetricRow(MetricServerNetInSpeed, id, ts, float64(m.NetInSpeed)),
+		makeServerMetricRow(MetricServerNetOutSpeed, id, ts, float64(m.NetOutSpeed)),
+		makeServerMetricRow(MetricServerNetInTransfer, id, ts, float64(m.NetInTransfer)),
+		makeServerMetricRow(MetricServerNetOutTransfer, id, ts, float64(m.NetOutTransfer)),
+		makeServerMetricRow(MetricServerLoad1, id, ts, m.Load1),
+		makeServerMetricRow(MetricServerLoad5, id, ts, m.Load5),
+		makeServerMetricRow(MetricServerLoad15, id, ts, m.Load15),
+		makeServerMetricRow(MetricServerTCPConn, id, ts, float64(m.TCPConnCount)),
+		makeServerMetricRow(MetricServerUDPConn, id, ts, float64(m.UDPConnCount)),
+		makeServerMetricRow(MetricServerProcessCount, id, ts, float64(m.ProcessCount)),
+		makeServerMetricRow(MetricServerUptime, id, ts, float64(m.Uptime)),
+	}
+}
 
+// serviceMetricRows 把一次拨测结果展开成延迟与状态（成功=1）两个样本。
+func serviceMetricRows(m *ServiceMetrics) []storage.MetricRow {
+	ts := m.Timestamp.UnixMilli()
+	serviceID := strconv.FormatUint(m.ServiceID, 10)
+	serverID := strconv.FormatUint(m.ServerID, 10)
 	var status float64
 	if m.Successful {
 		status = 1
 	}
-
-	rows := []storage.MetricRow{
-		makeServiceMetricRow(MetricServiceDelay, serviceIDStr, serverIDStr, ts, m.Delay),
-		makeServiceMetricRow(MetricServiceStatus, serviceIDStr, serverIDStr, ts, status),
+	return []storage.MetricRow{
+		makeServiceMetricRow(MetricServiceDelay, serviceID, serverID, ts, m.Delay),
+		makeServiceMetricRow(MetricServiceStatus, serviceID, serverID, ts, status),
 	}
+}
 
+// writeRows 在读锁内写入样本：已关闭返回 errClosed；有缓冲写入器走缓冲，否则直写存储。
+func (db *TSDB) writeRows(rows []storage.MetricRow) error {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if db.closed {
+		return errClosed
+	}
 	if db.writer != nil {
 		db.writer.write(rows)
 	} else {
-		db.storage.AddRows(rows, 64)
+		db.addRowsSafely(rows)
 	}
 	return nil
 }
@@ -225,69 +231,17 @@ func makeServiceMetricRow(metric MetricType, serviceID, serverID string, timesta
 }
 
 func (db *TSDB) WriteBatchServerMetrics(metrics []*ServerMetrics) error {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-	if db.closed {
-		return fmt.Errorf("TSDB is closed")
-	}
-
 	rows := make([]storage.MetricRow, 0, len(metrics)*15)
 	for _, m := range metrics {
-		ts := m.Timestamp.UnixMilli()
-		serverIDStr := strconv.FormatUint(m.ServerID, 10)
-		rows = append(rows,
-			makeServerMetricRow(MetricServerCPU, serverIDStr, ts, m.CPU),
-			makeServerMetricRow(MetricServerMemory, serverIDStr, ts, float64(m.MemUsed)),
-			makeServerMetricRow(MetricServerSwap, serverIDStr, ts, float64(m.SwapUsed)),
-			makeServerMetricRow(MetricServerDisk, serverIDStr, ts, float64(m.DiskUsed)),
-			makeServerMetricRow(MetricServerNetInSpeed, serverIDStr, ts, float64(m.NetInSpeed)),
-			makeServerMetricRow(MetricServerNetOutSpeed, serverIDStr, ts, float64(m.NetOutSpeed)),
-			makeServerMetricRow(MetricServerNetInTransfer, serverIDStr, ts, float64(m.NetInTransfer)),
-			makeServerMetricRow(MetricServerNetOutTransfer, serverIDStr, ts, float64(m.NetOutTransfer)),
-			makeServerMetricRow(MetricServerLoad1, serverIDStr, ts, m.Load1),
-			makeServerMetricRow(MetricServerLoad5, serverIDStr, ts, m.Load5),
-			makeServerMetricRow(MetricServerLoad15, serverIDStr, ts, m.Load15),
-			makeServerMetricRow(MetricServerTCPConn, serverIDStr, ts, float64(m.TCPConnCount)),
-			makeServerMetricRow(MetricServerUDPConn, serverIDStr, ts, float64(m.UDPConnCount)),
-			makeServerMetricRow(MetricServerProcessCount, serverIDStr, ts, float64(m.ProcessCount)),
-			makeServerMetricRow(MetricServerUptime, serverIDStr, ts, float64(m.Uptime)),
-		)
+		rows = append(rows, serverMetricRows(m)...)
 	}
-
-	if db.writer != nil {
-		db.writer.write(rows)
-	} else {
-		db.storage.AddRows(rows, 64)
-	}
-	return nil
+	return db.writeRows(rows)
 }
 
 func (db *TSDB) WriteBatchServiceMetrics(metrics []*ServiceMetrics) error {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-	if db.closed {
-		return fmt.Errorf("TSDB is closed")
-	}
-
 	rows := make([]storage.MetricRow, 0, len(metrics)*2)
 	for _, m := range metrics {
-		ts := m.Timestamp.UnixMilli()
-		serviceIDStr := strconv.FormatUint(m.ServiceID, 10)
-		serverIDStr := strconv.FormatUint(m.ServerID, 10)
-		var status float64
-		if m.Successful {
-			status = 1
-		}
-		rows = append(rows,
-			makeServiceMetricRow(MetricServiceDelay, serviceIDStr, serverIDStr, ts, m.Delay),
-			makeServiceMetricRow(MetricServiceStatus, serviceIDStr, serverIDStr, ts, status),
-		)
+		rows = append(rows, serviceMetricRows(m)...)
 	}
-
-	if db.writer != nil {
-		db.writer.write(rows)
-	} else {
-		db.storage.AddRows(rows, 64)
-	}
-	return nil
+	return db.writeRows(rows)
 }

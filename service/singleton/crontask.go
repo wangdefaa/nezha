@@ -18,17 +18,3 @@ func NewCronClass() *CronClass {
 	cronx.Start()
 	return &CronClass{Cron: cronx}
 }
-
-// userIsAdmin 供拨测等非 cron 业务复用（servicesentinel.go / server.go）。
-// 0 号用户是历史 global-secret 伪 owner，按 admin 处理。
-func userIsAdmin(userID uint64) bool {
-	if userID == 0 {
-		return true
-	}
-
-	UserLock.RLock()
-	defer UserLock.RUnlock()
-
-	userInfo, ok := UserInfoMap[userID]
-	return ok && userInfo.Role.IsAdmin()
-}

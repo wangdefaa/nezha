@@ -15,10 +15,7 @@ import (
 	"github.com/nezhahq/nezha/service/singleton"
 )
 
-type authHandler struct {
-	ClientSecret string
-	ClientUUID   string
-}
+type authHandler struct{}
 
 func (a *authHandler) Check(ctx context.Context) (uint64, error) {
 	return a.check(ctx)

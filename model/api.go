@@ -1,9 +1,5 @@
 package model
 
-const (
-	ApiErrorUnauthorized = 10001
-)
-
 type Oauth2LoginResponse struct {
 	Redirect string `json:"redirect,omitempty"`
 }

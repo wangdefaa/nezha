@@ -7,7 +7,7 @@ type NotificationForm struct {
 	RequestType       uint8  `json:"request_type,omitempty"`
 	RequestHeader     string `json:"request_header,omitempty"`
 	RequestBody       string `json:"request_body,omitempty"`
-	VerifyTLS         bool   `json:"verify_tls,omitempty" validate:"optional"`
+	VerifyTLS         *bool  `json:"verify_tls,omitempty" validate:"optional"` // 缺省：新建为 true，编辑为保留原值
 	SkipCheck         bool   `json:"skip_check,omitempty" validate:"optional"`
 	FormatMetricUnits bool   `json:"format_metric_units,omitempty" validate:"optional"`
 }

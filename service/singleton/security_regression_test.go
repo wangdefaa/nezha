@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/patrickmn/go-cache"
 	"github.com/robfig/cron/v3"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
 	"github.com/nezhahq/nezha/model"

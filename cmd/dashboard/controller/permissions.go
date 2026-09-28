@@ -10,15 +10,9 @@ import (
 )
 
 func callerIsAdmin(c *gin.Context) bool {
-	auth, ok := c.Get(model.CtxKeyAuthorizedUser)
-	if !ok {
-		return false
-	}
+	auth, _ := c.Get(model.CtxKeyAuthorizedUser)
 	user, ok := auth.(*model.User)
-	if !ok || user == nil {
-		return false
-	}
-	return user.Role.IsAdmin()
+	return ok && user != nil && user.Role.IsAdmin()
 }
 
 // patAllowsServer reports whether the caller's PAT (if any) is allowed to
@@ -26,83 +20,37 @@ func callerIsAdmin(c *gin.Context) bool {
 // extra guard before the admin / owner short-circuits so a PAT scoped to
 // a server_ids whitelist cannot widen reach via the caller's admin role.
 func patAllowsServer(c *gin.Context, serverID uint64) bool {
-	v, ok := c.Get(model.CtxKeyAPIToken)
-	if !ok {
-		return true
-	}
-	tok, _ := v.(model.APITokenAccessor)
-	if tok == nil {
-		return true
-	}
-	return tok.CanAccessServer(serverID)
+	tok := model.PATFromContext(c)
+	return tok == nil || tok.CanAccessServer(serverID)
 }
 
-// patHasServerWhitelist reports whether the caller is authenticated by a PAT
-// that carries a non-empty server_ids whitelist. Cover-all semantics in
-// Cron (CronCoverAll / CronCoverIgnoreAll-with-empty-Servers) and Service
-// (ServiceCoverAll-with-empty-SkipServers) intentionally fan out to every
-// server the cron/service's owner has — so a whitelisted PAT cannot create
-// or update such configs without escaping its own whitelist. JWT callers
-// and unscoped PATs have no whitelist to escape and pass through.
-//
-// This is the gate that turns the implicit-cover bypass at
-// /api/v1/service POST/PATCH into a 403; the dispatch side
-// (DispatchTask) does not re-check PAT context, so the only
-// safe place to enforce it is at write time.
+// patHasServerWhitelist 判断调用方是否为带非空 server_ids 白名单的 PAT。
+// ServiceCoverAll 会 fan-out 到 owner 的全部 server，受限 PAT 若能写入此类配置
+// 即可越出自身白名单；运行时 DispatchTask 不再看 PAT 上下文，所以只能在写入时拦截。
+// JWT 与不限 server 的 PAT 没有白名单可越，直接放行。
 func patHasServerWhitelist(c *gin.Context) bool {
-	v, ok := c.Get(model.CtxKeyAPIToken)
-	if !ok {
-		return false
-	}
+	v, _ := c.Get(model.CtxKeyAPIToken)
 	wl, ok := v.(model.APITokenWhitelistView)
-	if !ok || wl == nil {
-		return false
-	}
-	return len(wl.ServerIDs()) > 0
+	return ok && len(wl.ServerIDs()) > 0
 }
 
-// patAccessorFromContext returns the request's PAT viewed as an
-// APITokenAccessor, or nil for JWT requests. Routes that need to project
-// server-keyed data through the PAT whitelist (server-group, ws/server,
-// future stream/list endpoints) use this instead of poking c.Get directly.
-func patAccessorFromContext(c *gin.Context) model.APITokenAccessor {
-	v, ok := c.Get(model.CtxKeyAPIToken)
-	if !ok {
-		return nil
-	}
-	tok, _ := v.(model.APITokenAccessor)
-	if tok == nil {
-		return nil
-	}
-	return tok
-}
-
-// checkServiceSkipServerPermission is the service-monitor analogue.
+// checkServiceSkipServerPermission 校验服务监控 SkipServers 的写入权限。
 // ServiceCoverAll → SkipServers is a deny-set, only ownership required.
 // ServiceCoverIgnoreAll → SkipServers is an allow-set, full Server.HasPermission.
 //
-// Runtime DispatchTask + skipServersToDenyList only consult entries whose
+// Runtime DispatchTask + model.EnabledIDs only consult entries whose
 // bool value is true; false entries are no-ops. Filtering to true-only
 // here keeps the write-side permission check aligned with the runtime
 // fan-out (a member touching `{2: false}` for a foreign-owned server 2
 // has no dispatch effect, so rejecting the request is over-restrictive
 // and inconsistent with what listing / runtime see).
 func checkServiceSkipServerPermission(c *gin.Context, cover uint8, skip map[uint64]bool, ownerUID uint64) error {
-	effective := make(map[uint64]bool, len(skip))
-	for id, enabled := range skip {
-		if enabled {
-			effective[id] = true
-		}
-	}
+	ids := model.EnabledIDs(skip)
 	if cover == model.ServiceCoverAll {
-		if !denyListOwnedByCaller(ownerUID, effective) {
+		if !denyListOwnedByCaller(ownerUID, ids) {
 			return singleton.Localizer.ErrorT("permission denied")
 		}
 		return nil
-	}
-	ids := make([]uint64, 0, len(effective))
-	for id := range effective {
-		ids = append(ids, id)
 	}
 	if !singleton.ServerShared.CheckPermission(c, slices.Values(ids)) {
 		return singleton.Localizer.ErrorT("permission denied")
@@ -114,15 +62,15 @@ func checkServiceSkipServerPermission(c *gin.Context, cover uint8, skip map[uint
 // owned by ownerUID. Under *CoverAll the deny-list expresses exclusion, not
 // access, so it must not point at someone else's servers.
 //
-// Admin owners are special: runtime CronTrigger / DispatchTask fans out
+// Admin owners are special: runtime DispatchTask fans out
 // across the WHOLE system via userIsAdmin(owner), so a safe deny-list for
 // an admin-owned resource must be allowed to include foreign-owned servers
 // — that's the only way a limited PAT can contain the fan-out. We still
 // require each id to refer to a real server, just not to be owned by the
 // admin specifically.
-func denyListOwnedByCaller(ownerUID uint64, denyList map[uint64]bool) bool {
+func denyListOwnedByCaller(ownerUID uint64, denyList []uint64) bool {
 	ownerIsAdmin := model.OwnerIsAdminLookup != nil && model.OwnerIsAdminLookup(ownerUID)
-	for id := range denyList {
+	for _, id := range denyList {
 		s, found := singleton.ServerShared.Get(id)
 		if !found || s == nil {
 			return false
@@ -138,48 +86,38 @@ func denyListOwnedByCaller(ownerUID uint64, denyList map[uint64]bool) bool {
 }
 
 // denyListCoversAllOwnerServersOutsidePATWhitelist reports whether every
-// server visible to the cron/service owner that is NOT in the caller PAT's
+// server visible to the service owner that is NOT in the caller PAT's
 // server_ids whitelist also appears in denyList. Under *CoverAll semantics
-// the runtime dispatch (CronTrigger / DispatchTask) fans out to ServerShared
+// the runtime dispatch (DispatchTask) fans out to ServerShared
 // minus denyList; the only way a server-limited PAT can stay inside its
 // whitelist is if denyList already covers every owner-visible server outside
 // that whitelist. Returning true means the configuration is safe.
-func denyListCoversAllOwnerServersOutsidePATWhitelist(c *gin.Context, ownerUID uint64, denyList map[uint64]bool) bool {
-	tok := patAccessorFromContext(c)
-	if tok == nil {
-		return true
-	}
-	denyIDs := make([]uint64, 0, len(denyList))
-	for id, mark := range denyList {
-		if mark {
-			denyIDs = append(denyIDs, id)
-		}
-	}
-	return model.DenyListSafeForLimitedPAT(tok, ownerUID, denyIDs)
+func denyListCoversAllOwnerServersOutsidePATWhitelist(c *gin.Context, ownerUID uint64, denyIDs []uint64) bool {
+	tok := model.PATFromContext(c)
+	return tok == nil || model.DenyListSafeForLimitedPAT(tok, ownerUID, denyIDs)
 }
 
 // coverMode 抽象「cover 字段在 dispatch 时如何解读 servers 字段」。
 //
-// 写侧 rejectImplicit* 与运行时 manual/batch-delete 入口共用同一条 PAT 收口
-// 路径（assertPATCoverFanoutWithinWhitelist），靠它把两边的规则对齐。新增任
-// 何带 cover 概念的资源时，只需在自己的资源专用入口里把 Cover 枚举翻译成
-// 这三档之一即可。
+// 写侧 rejectImplicit* 与运行时 batch-delete 入口共用同一条 PAT 收口
+// 路径（assertPATCoverFanoutWithinWhitelist），靠它把两边的规则对齐。
+// 目前只有服务监控（Service）使用；定时任务已随 cron 模块移除。
 type coverMode uint8
 
 const (
 	// coverModePinnedByCaller: dispatch 阶段不按 servers 字段做 fan-out，
-	// 真实目标在 fire 时由外部信号（如告警触发者 server）钉死。代表：
-	// CronCoverAlertTrigger。PAT 在这里不做额外收口。
+	// 真实目标由外部信号钉死（原 CronCoverAlertTrigger，现无资源映射到此档，
+	// 仅保留给测试与将来的资源）。PAT 在这里不做额外收口。
 	coverModePinnedByCaller coverMode = iota
 
 	// coverModeAllMinusDeny: dispatch 时取 owner 全量 server 集合，再减去
-	// servers（deny-list）。代表 CronCoverAll / ServiceCoverAll。受限 PAT
+	// servers（deny-list）。代表 ServiceCoverAll。受限 PAT
 	// 必须确保 deny-list 已覆盖白名单外的全部 owner servers，否则 fan-out
 	// 会跑到 PAT 白名单之外。
 	coverModeAllMinusDeny
 
 	// coverModeAllowList: dispatch 时只在 servers（allow-list）内 fan-out。
-	// 代表 CronCoverIgnoreAll / ServiceCoverIgnoreAll。受限 PAT 必须能访
+	// 代表 ServiceCoverIgnoreAll。受限 PAT 必须能访
 	// 问 allow-list 中的每一个 server。空 allow-list 是「matches nothing」
 	// 的退化形态，安全。
 	coverModeAllowList
@@ -203,16 +141,12 @@ func assertPATCoverFanoutWithinWhitelist(c *gin.Context, ownerUID uint64, mode c
 	case coverModePinnedByCaller:
 		return nil
 	case coverModeAllMinusDeny:
-		denySet := make(map[uint64]bool, len(servers))
-		for _, id := range servers {
-			denySet[id] = true
-		}
-		if !denyListCoversAllOwnerServersOutsidePATWhitelist(c, ownerUID, denySet) {
+		if !denyListCoversAllOwnerServersOutsidePATWhitelist(c, ownerUID, servers) {
 			return singleton.Localizer.ErrorT("permission denied")
 		}
 		return nil
 	case coverModeAllowList:
-		tok := patAccessorFromContext(c)
+		tok := model.PATFromContext(c)
 		if tok == nil {
 			return nil
 		}
@@ -229,7 +163,7 @@ func assertPATCoverFanoutWithinWhitelist(c *gin.Context, ownerUID uint64, mode c
 	}
 }
 
-// coverModeUnknown 表示 Cron/Service 持久化里出现了当前代码不认识的 cover
+// coverModeUnknown 表示 Service 持久化里出现了当前代码不认识的 cover
 // 常量。这一档专门让 assertPATCoverFanoutWithinWhitelist 走 default 分支
 // fail-closed，保证「未知 cover 必须显式 wire，否则拒绝」的不变量。
 const coverModeUnknown coverMode = 255
@@ -240,7 +174,7 @@ const coverModeUnknown coverMode = 255
 // updateServerGroup before the transactional DELETE+INSERT — otherwise a
 // PAT scoped to [X] could indirectly remove server Y from a shared group.
 func patGroupMembershipAccessAllowed(c *gin.Context, groupID uint64) bool {
-	tok := patAccessorFromContext(c)
+	tok := model.PATFromContext(c)
 	if tok == nil || !patHasServerWhitelist(c) {
 		return true
 	}
@@ -256,10 +190,8 @@ func patGroupMembershipAccessAllowed(c *gin.Context, groupID uint64) bool {
 	return true
 }
 
-// isValidServiceCover is the service-monitor analogue. ServiceCoverAll and
-// ServiceCoverIgnoreAll are the only branches DispatchTask + Snapshot
-// recognise; anything else degrades to "default fan-out" which silently
-// escapes the PAT cover-fanout guard.
+// isValidServiceCover 校验服务监控 cover 枚举：DispatchTask 只认 ServiceCoverAll /
+// ServiceCoverIgnoreAll，其它值一旦落库会绕开 PAT cover-fanout 收口，必须在写入时拒绝。
 func isValidServiceCover(cover uint8) bool {
 	switch cover {
 	case model.ServiceCoverAll, model.ServiceCoverIgnoreAll:
@@ -277,7 +209,7 @@ func serviceCoverMode(cover uint8) coverMode {
 	case model.ServiceCoverIgnoreAll:
 		return coverModeAllowList
 	default:
-		// 同 cronCoverMode：未识别 cover 不允许借 pinned 旁路 PAT 收口。
+		// 未识别 cover 不允许借 pinned 旁路 PAT 收口。
 		return coverModeUnknown
 	}
 }
@@ -294,21 +226,7 @@ func rejectImplicitServiceCoverForLimitedPAT(c *gin.Context, cover uint8, skipSe
 	if cover != model.ServiceCoverAll {
 		return nil
 	}
-	denyServers := skipServersToDenyList(skipServers)
-	return assertPATCoverFanoutWithinWhitelist(c, ownerUID, coverModeAllMinusDeny, denyServers)
-}
-
-// skipServersToDenyList 把 service monitor 用的 SkipServers map 展平成
-// 共享底座需要的切片形态，并按 true 过滤。写侧/运行时入口共用，避免重复
-// 写遍历逻辑。
-func skipServersToDenyList(skip map[uint64]bool) []uint64 {
-	out := make([]uint64, 0, len(skip))
-	for id, mark := range skip {
-		if mark {
-			out = append(out, id)
-		}
-	}
-	return out
+	return assertPATCoverFanoutWithinWhitelist(c, ownerUID, coverModeAllMinusDeny, model.EnabledIDs(skipServers))
 }
 
 // enforcePATServiceDispatchScope 是 service monitor 运行时入口
@@ -319,7 +237,7 @@ func enforcePATServiceDispatchScope(c *gin.Context, svc *model.Service) error {
 	if svc == nil {
 		return nil
 	}
-	return assertPATCoverFanoutWithinWhitelist(c, svc.GetUserID(), serviceCoverMode(svc.Cover), skipServersToDenyList(svc.SkipServers))
+	return assertPATCoverFanoutWithinWhitelist(c, svc.GetUserID(), serviceCoverMode(svc.Cover), model.EnabledIDs(svc.SkipServers))
 }
 
 func userCanViewServer(c *gin.Context, server *model.Server) bool {

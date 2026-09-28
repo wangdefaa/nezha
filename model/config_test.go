@@ -22,7 +22,6 @@ func TestReadConfig(t *testing.T) {
 		}{
 			{"jwt_secret_key", c.JWTSecretKey, c.JWTSecretKey != ""},
 			{"user_template", c.UserTemplate, c.UserTemplate == "user-dist"},
-			{"admin_template", c.AdminTemplate, c.AdminTemplate == "admin-dist"},
 			{"agent_secret_key", c.AgentSecretKey, c.AgentSecretKey != ""},
 		}
 
@@ -56,7 +55,6 @@ func TestReadConfig(t *testing.T) {
 		}{
 			{"jwt_secret_key", c.JWTSecretKey, c.JWTSecretKey == "test"},
 			{"user_template", c.UserTemplate, c.UserTemplate == "um"},
-			{"admin_template", c.AdminTemplate, c.AdminTemplate == "am"},
 			{"agent_secret_key", c.AgentSecretKey, c.AgentSecretKey == "none"},
 			{"site_name", c.SiteName, c.SiteName == "lowkick"},
 		}
@@ -70,12 +68,63 @@ func TestReadConfig(t *testing.T) {
 		os.Remove(file)
 	})
 
+	// 管理端固定内置：旧配置残留的 admin_template 被忽略，user_template 也不能指向管理端条目。
+	t.Run("UserTemplateRejectsAdminEntry", func(t *testing.T) {
+		file := newTempConfig(t, "user_template: am\nadmin_template: am")
+		defer os.Remove(file)
+		c := &Config{}
+		if err := c.Read(file, []FrontendTemplate{{Path: "um"}, {Path: "am", IsAdmin: true}}); err != nil {
+			t.Fatalf("read config failed: %v", err)
+		}
+		if c.UserTemplate != "user-dist" {
+			t.Fatalf("user_template = %q, want fallback user-dist", c.UserTemplate)
+		}
+	})
+
+	// 回归：首启同时生成两个密钥时，补写 agent_secret_key 不能抹掉刚写入的 jwt_secret_key，
+	// 否则第二次启动（debug 构建不做版本轮换）会重新生成，已签发会话全部失效。
+	t.Run("GeneratedSecretsSurviveRestart", func(t *testing.T) {
+		file := newTempConfig(t, "")
+		defer os.Remove(file)
+		first := &Config{}
+		if err := first.Read(file, nil); err != nil {
+			t.Fatalf("first read failed: %v", err)
+		}
+		second := &Config{}
+		if err := second.Read(file, nil); err != nil {
+			t.Fatalf("second read failed: %v", err)
+		}
+		if second.JWTSecretKey != first.JWTSecretKey {
+			t.Fatal("jwt_secret_key regenerated on second start")
+		}
+		if second.AgentSecretKey != first.AgentSecretKey {
+			t.Fatal("agent_secret_key regenerated on second start")
+		}
+	})
+
+	// env 注入的 JWT 密钥永不落盘。
+	t.Run("EnvJWTSecretNotPersisted", func(t *testing.T) {
+		t.Setenv(JWTSecretEnvKey, "from-env")
+		file := newTempConfig(t, "")
+		defer os.Remove(file)
+		c := &Config{}
+		if err := c.Read(file, nil); err != nil {
+			t.Fatalf("read failed: %v", err)
+		}
+		saved, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read saved config: %v", err)
+		}
+		if strings.Contains(string(saved), "jwt_secret_key") || c.AgentSecretKey == "" {
+			t.Fatalf("unexpected saved config: %s", saved)
+		}
+	})
+
 	t.Run("ReadEnv", func(t *testing.T) {
-		os.Setenv("NZ_JWTSECRETKEY", "test")
-		os.Setenv("NZ_USERTEMPLATE", "um")
-		os.Setenv("NZ_ADMINTEMPLATE", "am")
-		os.Setenv("NZ_AGENTSECRETKEY", "none")
-		os.Setenv("NZ_HTTPS_LISTENPORT", "9876")
+		t.Setenv("NZ_JWTSECRETKEY", "test")
+		t.Setenv("NZ_USERTEMPLATE", "um")
+		t.Setenv("NZ_AGENTSECRETKEY", "none")
+		t.Setenv("NZ_HTTPS_LISTENPORT", "9876")
 
 		var testFrontendTemplates = []FrontendTemplate{
 			{Path: "um"},
@@ -95,7 +144,6 @@ func TestReadConfig(t *testing.T) {
 		}{
 			{"jwt_secret_key", c.JWTSecretKey, c.JWTSecretKey == "test"},
 			{"user_template", c.UserTemplate, c.UserTemplate == "um"},
-			{"admin_template", c.AdminTemplate, c.AdminTemplate == "am"},
 			{"agent_secret_key", c.AgentSecretKey, c.AgentSecretKey == "none"},
 			{"https.listenport", c.HTTPS.ListenPort, c.HTTPS.ListenPort == 9876},
 		}
@@ -112,7 +160,6 @@ func TestReadConfig(t *testing.T) {
 	t.Run("ReadEnvFile", func(t *testing.T) {
 		t.Setenv("NZ_JWTSECRETKEY", "test1")
 		t.Setenv("NZ_USERTEMPLATE", "um1")
-		t.Setenv("NZ_ADMINTEMPLATE", "am1")
 		t.Setenv("NZ_AGENTSECRETKEY", "none1")
 		t.Setenv("NZ_SITENAME", "lowkick1")
 
@@ -139,7 +186,6 @@ func TestReadConfig(t *testing.T) {
 			{"jwt_secret_key", c.JWTSecretKey, c.JWTSecretKey == "test1"},
 			{"jwt_secret_from_env", c.jwtSecretFromEnv, c.jwtSecretFromEnv},
 			{"user_template", c.UserTemplate, c.UserTemplate == "um1" || c.UserTemplate == "um"},
-			{"admin_template", c.AdminTemplate, c.AdminTemplate == "am1" || c.AdminTemplate == "am"},
 			{"agent_secret_key", c.AgentSecretKey, c.AgentSecretKey == "none" || c.AgentSecretKey == "none1"},
 			{"site_name", c.SiteName, c.SiteName == "lowkick" || c.SiteName == "lowkick1"},
 		}

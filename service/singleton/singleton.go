@@ -3,6 +3,7 @@ package singleton
 import (
 	_ "embed"
 	"fmt"
+	"io"
 	"iter"
 	"log"
 	"maps"
@@ -18,6 +19,7 @@ import (
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 	"sigs.k8s.io/yaml"
 
 	"github.com/nezhahq/nezha/model"
@@ -79,7 +81,7 @@ func InitDBFromPath(path string) error {
 	if err != nil {
 		return err
 	}
-	DB, err = gorm.Open(dialector, &gorm.Config{CreateBatchSize: 200})
+	DB, err = gorm.Open(dialector, &gorm.Config{CreateBatchSize: 200, Logger: gormLogger(os.Stdout)})
 	if err != nil {
 		return err
 	}
@@ -93,6 +95,17 @@ func InitDBFromPath(path string) error {
 		return err
 	}
 	return ReconcileTemplateSelection()
+}
+
+// gormLogger 同 logger.Default，但忽略 ErrRecordNotFound：否则未认证登录的任意长度用户名会随 SQL
+// 原样打进日志（一次 64MiB 请求即写 64MiB 日志，且可伪造换行注入日志）。
+func gormLogger(w io.Writer) logger.Interface {
+	return logger.New(log.New(w, "\r\n", log.LstdFlags), logger.Config{
+		SlowThreshold:             200 * time.Millisecond,
+		LogLevel:                  logger.Warn,
+		IgnoreRecordNotFoundError: true,
+		Colorful:                  true,
+	})
 }
 
 // initThemeDir 初始化自定义主题磁盘根目录（与数据库文件同级的 themes/）。
@@ -173,47 +186,78 @@ func RecordTransferHourlyUsage(servers ...*model.Server) {
 	log.Printf("NEZHA>> Saved traffic metrics to database. Affected %d row(s), Error: %v", len(txs), DB.Create(txs).Error)
 }
 
+// transferKeep 周期流量规则要求保留的数据起点：all 为 cover-all 规则的全局起点，special 为指定机器的起点。
+type transferKeep struct {
+	all        time.Time
+	special    map[uint64]time.Time
+	specialIDs []uint64
+}
+
+// transferBeforeCond 跨库「早于」条件；sqlite 以文本存时间，需 datetime() 规范化时区（同 model.transferTimeCond）。
+func transferBeforeCond() string {
+	if DB.Dialector.Name() == "sqlite" {
+		return "datetime(created_at) < datetime(?)"
+	}
+	return "created_at < ?"
+}
+
 // CleanMonitorHistory 清理流量记录（TSDB 有自己的保留策略）
 func CleanMonitorHistory() {
 	// 清理已被删除的服务器的流量记录
 	DB.Unscoped().Delete(&model.Transfer{}, "server_id NOT IN (SELECT id FROM servers)")
-	// 计算可清理流量记录的时长
-	var allServerKeep time.Time
-	specialServerKeep := make(map[uint64]time.Time)
-	var specialServerIDs []uint64
 	var alerts []model.AlertRule
-	DB.Find(&alerts)
+	// 规则读取失败时不能当作「无规则」处理，否则会把周期流量历史整表删光
+	if err := DB.Find(&alerts).Error; err != nil {
+		log.Printf("NEZHA>> Failed to load alert rules while cleaning transfer history: %v", err)
+		return
+	}
+	deleteExpiredTransfers(collectTransferKeep(alerts))
+}
+
+// collectTransferKeep 计算各周期流量规则要求保留的最早时间点。
+func collectTransferKeep(alerts []model.AlertRule) transferKeep {
+	keep := transferKeep{special: make(map[uint64]time.Time)}
 	for _, alert := range alerts {
 		for _, rule := range alert.Rules {
-			// 是不是流量记录规则
-			if !rule.IsTransferDurationRule() {
+			// 非周期规则或持久化数据非法（CycleStart 为空/CycleInterval 溢出）一律跳过，防启动期 panic/死循环
+			if !rule.HasSafeCycleConfiguration() {
 				continue
 			}
-			dataCouldRemoveBefore := rule.GetTransferDurationStart().UTC()
-			// 判断规则影响的机器范围
+			before := rule.GetTransferDurationStart().UTC()
 			if rule.Cover == model.RuleCoverAll {
-				// 更新全局可以清理的数据点
-				if allServerKeep.IsZero() || allServerKeep.After(dataCouldRemoveBefore) {
-					allServerKeep = dataCouldRemoveBefore
+				if keep.all.IsZero() || keep.all.After(before) {
+					keep.all = before
 				}
-			} else {
-				// 更新特定机器可以清理数据点
-				for id := range rule.Ignore {
-					if specialServerKeep[id].IsZero() || specialServerKeep[id].After(dataCouldRemoveBefore) {
-						specialServerKeep[id] = dataCouldRemoveBefore
-						specialServerIDs = append(specialServerIDs, id)
-					}
+				continue
+			}
+			for id := range rule.Ignore {
+				if keep.special[id].IsZero() || keep.special[id].After(before) {
+					keep.special[id] = before
+					keep.specialIDs = append(keep.specialIDs, id)
 				}
 			}
 		}
 	}
-	for id, couldRemove := range specialServerKeep {
-		DB.Unscoped().Delete(&model.Transfer{}, "server_id = ? AND created_at < ?", id, couldRemove)
+	return keep
+}
+
+// deleteExpiredTransfers 按保留点删除流量记录；specialIDs 为空时不能用 NOT IN (?)（会渲染成 NOT IN (NULL)，一行都删不掉）。
+func deleteExpiredTransfers(keep transferKeep) {
+	for id, couldRemove := range keep.special {
+		DB.Unscoped().Delete(&model.Transfer{}, "server_id = ? AND "+transferBeforeCond(), id, couldRemove)
 	}
-	if allServerKeep.IsZero() {
-		DB.Unscoped().Delete(&model.Transfer{}, "server_id NOT IN (?)", specialServerIDs)
+	if len(keep.specialIDs) == 0 {
+		if keep.all.IsZero() {
+			DB.Unscoped().Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&model.Transfer{})
+		} else {
+			DB.Unscoped().Delete(&model.Transfer{}, transferBeforeCond(), keep.all)
+		}
+		return
+	}
+	if keep.all.IsZero() {
+		DB.Unscoped().Delete(&model.Transfer{}, "server_id NOT IN (?)", keep.specialIDs)
 	} else {
-		DB.Unscoped().Delete(&model.Transfer{}, "server_id NOT IN (?) AND created_at < ?", specialServerIDs, allServerKeep)
+		DB.Unscoped().Delete(&model.Transfer{}, "server_id NOT IN (?) AND "+transferBeforeCond(), keep.specialIDs, keep.all)
 	}
 }
 

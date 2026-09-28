@@ -2,14 +2,9 @@ package model
 
 import (
 	"fmt"
+	"math"
 
 	pb "github.com/nezhahq/nezha/proto"
-)
-
-const (
-	_ = iota
-
-	MTReportHostState
 )
 
 type HostState struct {
@@ -30,29 +25,23 @@ type HostState struct {
 	ProcessCount   uint64  `json:"process_count,omitempty"`
 }
 
-func (s *HostState) PB() *pb.State {
-	return &pb.State{
-		Cpu:            s.CPU,
-		MemUsed:        s.MemUsed,
-		SwapUsed:       s.SwapUsed,
-		DiskUsed:       s.DiskUsed,
-		NetInTransfer:  s.NetInTransfer,
-		NetOutTransfer: s.NetOutTransfer,
-		NetInSpeed:     s.NetInSpeed,
-		NetOutSpeed:    s.NetOutSpeed,
-		Uptime:         s.Uptime,
-		Load1:          s.Load1,
-		Load5:          s.Load5,
-		Load15:         s.Load15,
-		TcpConnCount:   s.TcpConnCount,
-		UdpConnCount:   s.UdpConnCount,
-		ProcessCount:   s.ProcessCount,
+// IsFinite 判断浮点数既非 NaN 也非 ±Inf。
+func IsFinite(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0)
+}
+
+// FiniteOrZero 把 NaN/±Inf 归零。agent 上报的 double 不可信，非有限值进入运行态后
+// 会让所有 JSON 序列化（/ws/server、/api/v1/server）失败。
+func FiniteOrZero(v float64) float64 {
+	if !IsFinite(v) {
+		return 0
 	}
+	return v
 }
 
 func PB2State(s *pb.State) HostState {
 	return HostState{
-		CPU:            s.GetCpu(),
+		CPU:            FiniteOrZero(s.GetCpu()),
 		MemUsed:        s.GetMemUsed(),
 		SwapUsed:       s.GetSwapUsed(),
 		DiskUsed:       s.GetDiskUsed(),
@@ -61,9 +50,9 @@ func PB2State(s *pb.State) HostState {
 		NetInSpeed:     s.GetNetInSpeed(),
 		NetOutSpeed:    s.GetNetOutSpeed(),
 		Uptime:         s.GetUptime(),
-		Load1:          s.GetLoad1(),
-		Load5:          s.GetLoad5(),
-		Load15:         s.GetLoad15(),
+		Load1:          FiniteOrZero(s.GetLoad1()),
+		Load5:          FiniteOrZero(s.GetLoad5()),
+		Load15:         FiniteOrZero(s.GetLoad15()),
 		TcpConnCount:   s.GetTcpConnCount(),
 		UdpConnCount:   s.GetUdpConnCount(),
 		ProcessCount:   s.GetProcessCount(),
@@ -81,21 +70,6 @@ type Host struct {
 	Virtualization  string   `json:"virtualization,omitempty"`
 	BootTime        uint64   `json:"boot_time,omitempty"`
 	Version         string   `json:"version,omitempty"`
-}
-
-func (h *Host) PB() *pb.Host {
-	return &pb.Host{
-		Platform:        h.Platform,
-		PlatformVersion: h.PlatformVersion,
-		Cpu:             h.CPU,
-		MemTotal:        h.MemTotal,
-		DiskTotal:       h.DiskTotal,
-		SwapTotal:       h.SwapTotal,
-		Arch:            h.Arch,
-		Virtualization:  h.Virtualization,
-		BootTime:        h.BootTime,
-		Version:         h.Version,
-	}
 }
 
 // Filter returns a new instance of Host with some fields redacted.

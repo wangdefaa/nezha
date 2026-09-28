@@ -3,7 +3,6 @@ package controller
 import (
 	"net"
 	"slices"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -16,23 +15,15 @@ import (
 // @Summary List blocked addresses
 // @Security BearerAuth
 // @Schemes
-// @Description List server
-// @Tags auth required
+// @Description List blocked addresses
+// @Tags admin required
 // @Param limit query uint false "Page limit"
 // @Param offset query uint false "Page offset"
 // @Produce json
 // @Success 200 {object} model.PaginatedResponse[[]model.WAFApiMock, model.WAFApiMock]
 // @Router /waf [get]
 func listBlockedAddress(c *gin.Context) (*model.Value[[]*model.WAFApiMock], error) {
-	limit, err := strconv.Atoi(c.Query("limit"))
-	if err != nil || limit < 1 {
-		limit = 25
-	}
-
-	offset, err := strconv.Atoi(c.Query("offset"))
-	if err != nil || offset < 0 {
-		offset = 0
-	}
+	limit, offset := parsePagination(c)
 
 	var waf []*model.WAF
 	if err := singleton.DB.Order("block_timestamp DESC").Limit(limit).Offset(offset).Find(&waf).Error; err != nil {
@@ -63,16 +54,16 @@ func listBlockedAddress(c *gin.Context) (*model.Value[[]*model.WAFApiMock], erro
 }
 
 // Batch delete blocked addresses
-// @Summary Edit server
+// @Summary Batch delete blocked addresses
 // @Security BearerAuth
 // @Schemes
-// @Description Edit server
+// @Description Batch delete blocked addresses
 // @Tags admin required
 // @Accept json
 // @Param request body []string true "block list"
 // @Produce json
 // @Success 200 {object} model.CommonResponse[any]
-// @Router /batch-delete/waf [patch]
+// @Router /batch-delete/waf [post]
 func batchDeleteBlockedAddress(c *gin.Context) (any, error) {
 	var list []string
 	if err := c.ShouldBindJSON(&list); err != nil {

@@ -41,24 +41,17 @@ func InitConfigFromPath(path string) error {
 	return nil
 }
 
-func (c *ConfigClass) Save() error {
-	c.updateIgnoredIPNotificationID()
-	return c.Config.Save()
-}
-
-// updateIgnoredIPNotificationID 更新用于判断服务器ID是否属于特定服务器的map
+// updateIgnoredIPNotificationID 按逗号分隔的服务器 ID 重建 IP 变更通知的覆盖集合。
+// 先建好新 map 再整体替换：列表清空时旧集合也必须清掉（原实现提前 return，清空后仍按旧列表生效）；
+// ID 两侧的空格要去掉，否则「1, 2」里的 2 会被静默丢弃。
 func (c *ConfigClass) updateIgnoredIPNotificationID() {
-	if c.IgnoredIPNotification == "" {
-		return
-	}
-
-	c.IgnoredIPNotificationServerIDs = make(map[uint64]bool)
-	for splitedID := range strings.SplitSeq(c.IgnoredIPNotification, ",") {
-		id, _ := strconv.ParseUint(splitedID, 10, 64)
-		if id > 0 {
-			c.IgnoredIPNotificationServerIDs[id] = true
+	ids := make(map[uint64]bool)
+	for raw := range strings.SplitSeq(c.IgnoredIPNotification, ",") {
+		if id, _ := strconv.ParseUint(strings.TrimSpace(raw), 10, 64); id > 0 {
+			ids[id] = true
 		}
 	}
+	c.IgnoredIPNotificationServerIDs = ids
 }
 
 // refreshDerived 刷新派生缓存：oauth2 名单与忽略IP集合。

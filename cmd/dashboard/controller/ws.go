@@ -44,7 +44,7 @@ func InitUpgrader() {
 				}
 			} else {
 				// Handle domains like "localhost"
-				ip, err := net.LookupHost(host)
+				ip, err := net.LookupHost(host) // #nosec G704 -- 仅 debug 模式做回环判定，只解析不建连
 				if err != nil || len(ip) == 0 {
 					return false
 				}
@@ -121,62 +121,78 @@ func serverStream(c *gin.Context) (any, error) {
 	deregisterPAT := registerPATConnection(c, func() { _ = conn.Close() })
 	defer deregisterPAT()
 
-	userIp := c.GetString(model.CtxKeyRealIPStr)
-	if userIp == "" {
-		userIp = c.RemoteIP()
-	}
-
-	u, isMember := c.Get(model.CtxKeyAuthorizedUser)
-	var (
-		userId  uint64
-		isAdmin bool
-	)
-	if isMember {
-		user := u.(*model.User)
-		userId = user.ID
-		isAdmin = user.Role.IsAdmin()
-	}
-	patAccessor, patCacheKey := patStreamContext(c)
-
+	viewer := newStreamViewer(c)
 	singleton.AddOnlineUser(connId, &model.OnlineUser{
-		UserID:      userId,
-		IP:          userIp,
+		UserID:      viewer.userID,
+		IP:          viewer.ip,
 		ConnectedAt: time.Now(),
 		Conn:        conn,
 	})
 	defer singleton.RemoveOnlineUser(connId)
 
-	count := 0
-	for {
-		stat, err := getServerStat(count == 0, userId, isAdmin, patAccessor, patCacheKey)
-		if err != nil {
-			continue
-		}
-		if err := conn.WriteMessage(websocket.TextMessage, stat); err != nil {
-			break
-		}
-		count += 1
-		if count%4 == 0 {
-			err = conn.WriteMessage(websocket.PingMessage, []byte{})
-			if err != nil {
-				break
-			}
-		}
-		time.Sleep(time.Second * 2)
-	}
+	pushServerStats(conn, viewer)
 	return nil, newWsError("")
+}
+
+// serverStreamInterval /ws/server 的推送间隔。
+const serverStreamInterval = 2 * time.Second
+
+// streamViewer 一条 WS 连接的观看者身份，决定推送内容的投影与缓存键。
+type streamViewer struct {
+	userID      uint64
+	isAdmin     bool
+	ip          string
+	pat         model.APITokenAccessor
+	patCacheKey string
+}
+
+func newStreamViewer(c *gin.Context) streamViewer {
+	v := streamViewer{ip: clientIP(c)}
+	if u, ok := c.Get(model.CtxKeyAuthorizedUser); ok {
+		user := u.(*model.User)
+		v.userID, v.isAdmin = user.ID, user.Role.IsAdmin()
+	}
+	v.pat, v.patCacheKey = patStreamContext(c)
+	return v
+}
+
+// pushServerStats 按固定间隔推送。序列化失败只跳过本帧并同样等待——旧实现直接 continue，
+// 运行态出现坏数据（如 NaN）时每个连接（访客即可建立）都会空转占满一个 CPU 核。
+// 跳过数据帧时改发 ping 探测对端，断开即退出，避免协程与在线用户记录泄漏。
+func pushServerStats(conn *websocket.Conn, v streamViewer) {
+	sent := 0
+	for {
+		stat, err := getServerStat(sent == 0, v.userID, v.isAdmin, v.pat, v.patCacheKey)
+		switch {
+		case err != nil:
+			if conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(serverStreamInterval)) != nil {
+				return
+			}
+		case !writeServerStatFrame(conn, stat, sent):
+			return
+		default:
+			sent++
+		}
+		time.Sleep(serverStreamInterval)
+	}
+}
+
+// writeServerStatFrame 写一帧数据，每 4 帧追加一次 ping；任一写失败返回 false 结束推送。
+func writeServerStatFrame(conn *websocket.Conn, stat []byte, sent int) bool {
+	if err := conn.WriteMessage(websocket.TextMessage, stat); err != nil {
+		return false
+	}
+	if (sent+1)%4 == 0 {
+		return conn.WriteMessage(websocket.PingMessage, []byte{}) == nil
+	}
+	return true
 }
 
 var requestGroup singleflight.Group
 
-// getServerStat returns the websocket frame the viewer is allowed to see.
-// The cache key must include the viewer's identity because the projection
-// depends on per-server ownership: prior to GHSA-hvv7-hfrh-7gxj this function
-// used a single isMember flag and leaked HideForGuest servers plus full Host
-// (PlatformVersion, agent Version) to every authenticated user.
-//
-// patCacheKey distinguishes PATs with disjoint server_ids whitelists so two
-// limited tokens for the same user do not share a singleflight projection.
+// getServerStat 返回当前观看者可见的推流帧。singleflight 键必须含观看者身份
+// （GHSA-hvv7-hfrh-7gxj：曾只按 isMember 缓存，向所有登录用户泄露 HideForGuest
+// 服务器与完整 Host）；patCacheKey 区分白名单不同的 PAT，避免共用投影。
 func getServerStat(withPublicNote bool, viewerUserID uint64, viewerIsAdmin bool, pat model.APITokenAccessor, patCacheKey string) ([]byte, error) {
 	cacheKey := fmt.Sprintf("serverStats::%t::%t::%d::%s", withPublicNote, viewerIsAdmin, viewerUserID, patCacheKey)
 	v, err, _ := requestGroup.Do(cacheKey, func() (any, error) {
@@ -202,13 +218,18 @@ func patStreamContext(c *gin.Context) (model.APITokenAccessor, string) {
 	if tok == nil {
 		return nil, "jwt"
 	}
+	return tok, fmt.Sprintf("pat:%d:%s", tok.ID, sortedServerIDsKey(tok))
+}
+
+// sortedServerIDsKey 把 PAT 的 server 白名单排序后拼成稳定字符串，用作缓存键片段。
+func sortedServerIDsKey(tok *model.APIToken) string {
 	ids := tok.ServerIDs()
 	slices.Sort(ids)
 	parts := make([]string, 0, len(ids))
 	for _, id := range ids {
 		parts = append(parts, strconv.FormatUint(id, 10))
 	}
-	return tok, fmt.Sprintf("pat:%d:%s", tok.ID, strings.Join(parts, ","))
+	return strings.Join(parts, ",")
 }
 
 // filterServersForViewer projects the global server list down to what a single

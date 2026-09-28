@@ -5,25 +5,14 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/glebarez/sqlite"
 	"google.golang.org/grpc/metadata"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
 	"github.com/nezhahq/nezha/model"
 	"github.com/nezhahq/nezha/pkg/utils"
 	"github.com/nezhahq/nezha/service/singleton"
 )
-
-// authCheckWithSecret drives (*authHandler).check end-to-end via the same
-// gRPC metadata path the real RPC handler uses. Tests rely on it to assert
-// what a real reconnect — secret + UUID supplied on the wire — would do.
-func authCheckWithSecret(secret, uuid string) (uint64, error) {
-	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
-		"client_secret", secret,
-		"client_uuid", uuid,
-	))
-	return (&authHandler{}).Check(ctx)
-}
 
 func authCheckWithHyphenatedSecret(secret, uuid string) (uint64, error) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(

@@ -19,12 +19,7 @@ import (
 // @Success 200 {object} model.CommonResponse[model.SettingResponse]
 // @Router /setting [get]
 func listConfig(c *gin.Context) (*model.SettingResponse, error) {
-	u, authorized := c.Get(model.CtxKeyAuthorizedUser)
-	var isAdmin bool
-	if authorized {
-		user := u.(*model.User)
-		isAdmin = user.Role.IsAdmin()
-	}
+	_, authorized := c.Get(model.CtxKeyAuthorizedUser)
 
 	config := *singleton.Conf
 	config.Language = strings.ReplaceAll(config.Language, "_", "-")
@@ -42,7 +37,7 @@ func listConfig(c *gin.Context) (*model.SettingResponse, error) {
 		TSDBEnabled:       singleton.TSDBEnabled(),
 	}
 
-	if !authorized || !isAdmin {
+	if !callerIsAdmin(c) {
 		configForGuests := config.ConfigForGuests
 		var configDashboard model.ConfigDashboard
 		if authorized {
@@ -89,7 +84,6 @@ func updateConfig(c *gin.Context) (any, error) {
 	singleton.Conf.IPChangeNotificationGroupID = sf.IPChangeNotificationGroupID
 	singleton.Conf.SiteName = sf.SiteName
 	singleton.Conf.CustomCode = sf.CustomCode
-	singleton.Conf.CustomCodeDashboard = sf.CustomCodeDashboard
 	singleton.Conf.WebRealIPHeader = sf.WebRealIPHeader
 	singleton.Conf.AgentRealIPHeader = sf.AgentRealIPHeader
 	singleton.Conf.AgentTLS = sf.AgentTLS

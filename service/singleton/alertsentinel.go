@@ -33,7 +33,7 @@ var (
 
 // addCycleTransferStatsInfo 向AlertsCycleTransferStatsStore中添加周期流量报警统计信息
 func addCycleTransferStatsInfo(alert *model.AlertRule) {
-	if !alert.Enabled() {
+	if alert == nil || !alert.Enabled() || !alert.IsSafeToEvaluate() {
 		return
 	}
 	for _, rule := range alert.Rules {
@@ -59,19 +59,7 @@ func addCycleTransferStatsInfo(alert *model.AlertRule) {
 
 // AlertSentinelStart 报警器启动
 func AlertSentinelStart() {
-	alertsStore = make(map[uint64]map[uint64][][]bool)
-	alertsPrevState = make(map[uint64]map[uint64]uint8)
-	AlertsCycleTransferStatsStore = make(map[uint64]*model.CycleTransferStats)
-	AlertsLock.Lock()
-	if err := DB.Find(&Alerts).Error; err != nil {
-		panic(err)
-	}
-	for _, alert := range Alerts {
-		alertsStore[alert.ID] = make(map[uint64][][]bool)
-		alertsPrevState[alert.ID] = make(map[uint64]uint8)
-		addCycleTransferStatsInfo(alert)
-	}
-	AlertsLock.Unlock()
+	loadAlertRules()
 
 	time.Sleep(time.Second * 10)
 	lastPrint := time.Now()
@@ -87,6 +75,31 @@ func AlertSentinelStart() {
 			checkCount = 0
 			lastPrint = startedAt
 		}
+	}
+}
+
+// loadAlertRules 启动时加载告警规则并初始化采样存储；持久化数据非法的规则跳过求值，避免重启后再次崩溃形成循环。
+func loadAlertRules() {
+	alertsStore = make(map[uint64]map[uint64][][]bool)
+	alertsPrevState = make(map[uint64]map[uint64]uint8)
+	AlertsCycleTransferStatsStore = make(map[uint64]*model.CycleTransferStats)
+	AlertsLock.Lock()
+	defer AlertsLock.Unlock()
+	if err := DB.Find(&Alerts).Error; err != nil {
+		panic(err)
+	}
+	for _, alert := range Alerts {
+		if alert == nil {
+			log.Printf("NEZHA>> Skipping invalid nil alert rule loaded from database")
+			continue
+		}
+		alertsStore[alert.ID] = make(map[uint64][][]bool)
+		alertsPrevState[alert.ID] = make(map[uint64]uint8)
+		if !alert.IsSafeToEvaluate() {
+			log.Printf("NEZHA>> Skipping invalid alert rule %d loaded from database", alert.ID)
+			continue
+		}
+		addCycleTransferStatsInfo(alert)
 	}
 }
 
@@ -109,6 +122,25 @@ func OnRefreshOrAddAlert(alert *model.AlertRule) {
 	alertsPrevState[alert.ID] = make(map[uint64]uint8)
 	delete(AlertsCycleTransferStatsStore, alert.ID)
 	addCycleTransferStatsInfo(alert)
+}
+
+// replaceAlertRules 换上只改了服务器范围或通知组的规则。判断条件没变，所以不像 OnRefreshOrAddAlert
+// 那样清空采样与通知状态，免得「单次触发」的规则对还没恢复的故障再发一次通知。
+func replaceAlertRules(rules []*model.AlertRule) {
+	if len(rules) == 0 {
+		return
+	}
+	byID := make(map[uint64]*model.AlertRule, len(rules))
+	for _, r := range rules {
+		byID[r.ID] = r
+	}
+	AlertsLock.Lock()
+	defer AlertsLock.Unlock()
+	for i, a := range Alerts {
+		if r, ok := byID[a.ID]; ok {
+			Alerts[i] = r
+		}
+	}
 }
 
 func OnDeleteAlert(id []uint64) {
@@ -135,63 +167,78 @@ func checkStatus() {
 	m := ServerShared.GetList()
 
 	for _, alert := range Alerts {
-		// 跳过未启用
-		if !alert.Enabled() {
+		// 跳过未启用或持久化数据非法的规则
+		if alert == nil || !alert.Enabled() || !alert.IsSafeToEvaluate() {
 			continue
 		}
+		// 非 admin 的规则只监测 owner 自己的服务器
+		ownerIsAdmin := UserRole(alert.UserID).IsAdmin()
 		for _, server := range m {
-			// 监测点
-			UserLock.RLock()
-			var role model.Role
-			if u, ok := UserInfoMap[alert.UserID]; !ok {
-				role = model.RoleMember
-			} else {
-				role = u.Role
-			}
-			UserLock.RUnlock()
-			if alert.UserID != server.GetUserID() && !role.IsAdmin() {
+			if alert.UserID != server.GetUserID() && !ownerIsAdmin {
 				continue
 			}
-			alertsStore[alert.ID][server.ID] = append(alertsStore[alert.
-				ID][server.ID], alert.Snapshot(AlertsCycleTransferStatsStore[alert.ID], server, DB))
-			// 发送通知，分为触发报警和恢复通知
-			_, passed := alert.Check(alertsStore[alert.ID][server.ID])
-			// 保存当前服务器状态信息
-			curServer := model.Server{}
-			copier.Copy(&curServer, server)
-
-			// 本次未通过检查
-			if !passed {
-				// 始终触发模式或上次检查不为失败时触发报警（跳过单次触发+上次失败的情况）
-				if alert.TriggerMode == model.ModeAlwaysTrigger || alertsPrevState[alert.ID][server.ID] != _RuleCheckFail {
-					alertsPrevState[alert.ID][server.ID] = _RuleCheckFail
-					message := fmt.Sprintf("[%s] %s(%s) %s", Localizer.T("Incident"),
-						server.Name, IPDesensitize(server.GeoIP.IP.Join()), alert.Name)
-					go NotificationShared.SendNotification(alert.NotificationGroupID, message, NotificationMuteLabel.ServerIncident(server.ID, alert.ID), &curServer)
-					// 清除恢复通知的静音缓存
-					NotificationShared.UnMuteNotification(alert.NotificationGroupID, NotificationMuteLabel.ServerIncidentResolved(server.ID, alert.ID))
-				}
-			} else {
-				// 本次通过检查但上一次的状态为失败，则发送恢复通知
-				if alertsPrevState[alert.ID][server.ID] == _RuleCheckFail {
-					message := fmt.Sprintf("[%s] %s(%s) %s", Localizer.T("Resolved"),
-						server.Name, IPDesensitize(server.GeoIP.IP.Join()), alert.Name)
-					go NotificationShared.SendNotification(alert.NotificationGroupID, message, NotificationMuteLabel.ServerIncidentResolved(server.ID, alert.ID), &curServer)
-					// 清除失败通知的静音缓存
-					NotificationShared.UnMuteNotification(alert.NotificationGroupID, NotificationMuteLabel.ServerIncident(server.ID, alert.ID))
-				}
-				alertsPrevState[alert.ID][server.ID] = _RuleCheckPass
-			}
-			// 清理旧数据：保留窗口由规则定义决定（各规则 Duration 的最大值），
-			// 而非 Check 的判定结果。window==0 表示没有任何有效规则需要回看历史
-			// （例如全部 Duration<=0），此时清空采样避免切片无限增长。
-			window := alert.RetentionWindow()
-			samples := alertsStore[alert.ID][server.ID]
-			if window <= 0 {
-				alertsStore[alert.ID][server.ID] = samples[:0]
-			} else if window < len(samples) {
-				alertsStore[alert.ID][server.ID] = samples[len(samples)-window:]
-			}
+			checkStatusForServer(alert, server)
 		}
+	}
+}
+
+// checkStatusForServer 隔离单个 alert/server 的求值：任何意外 panic 都不应拖垮进程
+// 或阻止同一 tick 内其它服务器的检查。
+func checkStatusForServer(alert *model.AlertRule, server *model.Server) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("NEZHA>> Recovered panic evaluating alert rule %d for server %d: %v", alert.ID, server.ID, recovered)
+		}
+	}()
+
+	alertsStore[alert.ID][server.ID] = append(alertsStore[alert.
+		ID][server.ID], alert.Snapshot(AlertsCycleTransferStatsStore[alert.ID], server, DB))
+	// 发送通知，分为触发报警和恢复通知
+	_, passed := alert.Check(alertsStore[alert.ID][server.ID])
+	// 保存当前服务器状态信息
+	curServer := model.Server{}
+	copier.Copy(&curServer, server)
+	if !passed {
+		notifyAlertIncident(alert, server, &curServer)
+	} else {
+		notifyAlertResolved(alert, server, &curServer)
+	}
+	trimAlertSamples(alert, server.ID)
+}
+
+// notifyAlertIncident 本次未通过检查：始终触发模式或上次检查不为失败时触发报警（跳过单次触发+上次失败的情况）。
+func notifyAlertIncident(alert *model.AlertRule, server, curServer *model.Server) {
+	if alert.TriggerMode != model.ModeAlwaysTrigger && alertsPrevState[alert.ID][server.ID] == _RuleCheckFail {
+		return
+	}
+	alertsPrevState[alert.ID][server.ID] = _RuleCheckFail
+	message := fmt.Sprintf("[%s] %s(%s) %s", Localizer.T("Incident"),
+		server.Name, IPDesensitize(server.GeoIP.IP.Join()), alert.Name)
+	go NotificationShared.SendNotification(alert.NotificationGroupID, message, NotificationMuteLabel.ServerIncident(server.ID, alert.ID), curServer)
+	// 清除恢复通知的静音缓存
+	NotificationShared.UnMuteNotification(alert.NotificationGroupID, NotificationMuteLabel.ServerIncidentResolved(server.ID, alert.ID))
+}
+
+// notifyAlertResolved 本次通过检查但上一次的状态为失败，则发送恢复通知。
+func notifyAlertResolved(alert *model.AlertRule, server, curServer *model.Server) {
+	if alertsPrevState[alert.ID][server.ID] == _RuleCheckFail {
+		message := fmt.Sprintf("[%s] %s(%s) %s", Localizer.T("Resolved"),
+			server.Name, IPDesensitize(server.GeoIP.IP.Join()), alert.Name)
+		go NotificationShared.SendNotification(alert.NotificationGroupID, message, NotificationMuteLabel.ServerIncidentResolved(server.ID, alert.ID), curServer)
+		// 清除失败通知的静音缓存
+		NotificationShared.UnMuteNotification(alert.NotificationGroupID, NotificationMuteLabel.ServerIncident(server.ID, alert.ID))
+	}
+	alertsPrevState[alert.ID][server.ID] = _RuleCheckPass
+}
+
+// trimAlertSamples 清理旧数据：保留窗口由规则定义决定（各规则 Duration 的最大值），而非 Check 的判定结果。
+// window==0 表示没有任何有效规则需要回看历史（例如全部 Duration<=0），此时清空采样避免切片无限增长。
+func trimAlertSamples(alert *model.AlertRule, serverID uint64) {
+	window := alert.RetentionWindow()
+	samples := alertsStore[alert.ID][serverID]
+	if window <= 0 {
+		alertsStore[alert.ID][serverID] = samples[:0]
+	} else if window < len(samples) {
+		alertsStore[alert.ID][serverID] = samples[len(samples)-window:]
 	}
 }

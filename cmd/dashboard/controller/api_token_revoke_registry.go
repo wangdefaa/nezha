@@ -14,10 +14,8 @@ import (
 // are created and deleted.
 const revokeTombstoneTTL = 10 * time.Minute
 
-// patConnectionRegistry tracks active long-lived connections (terminal,
-// FM, ws/server, ws/transfer, etc.) per PAT id so that deleteAPIToken can
-// cancel them immediately on revocation. Without this, a deleted PAT
-// keeps streaming until the underlying connection naturally drops.
+// patConnectionRegistry 按 PAT id 登记活跃长连接（目前只有 ws/server），
+// 让 deleteAPIToken 吊销时能立即断开；否则已删 PAT 会一直推流到连接自然断开。
 //
 // The registry deliberately holds no goroutines — it only stores cancel
 // hooks the connection setup already owns. Handlers register on entry
@@ -129,10 +127,8 @@ var patConnectionRegistryShared = newPATConnectionRegistry()
 // handler MUST defer. For JWT-authenticated requests the hook is a
 // no-op so call sites stay portable.
 //
-// Long-lived endpoints (terminal, FM, ws/server, ws/transfer) call
-// this on entry and pass a cancel function that drops their websocket
-// or relay loop. deleteAPIToken then revokes every active hook
-// registered under the deleted token id.
+// 长连接端点（目前只有 ws/server）在入口调用并传入断开 websocket 的 cancel；
+// deleteAPIToken 随后会触发该 token id 下登记的全部 cancel。
 func registerPATConnection(c interface {
 	Get(any) (any, bool)
 }, cancel func()) func() {

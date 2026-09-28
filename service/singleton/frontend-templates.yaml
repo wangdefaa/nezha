@@ -1,10 +1,9 @@
+# 管理端：仅供构建期 fetch-frontends.sh 按 version 拉取并嵌入二进制；不入库、不可在面板更新。
 - path: "admin-dist"
   name: "OfficialAdmin"
   repository: "https://github.com/wangdefaa/nezha-admin-dash"
-  github_repo: "wangdefaa/nezha-admin-dash"
-  release_asset: "dist.zip"
   author: "wangdefaa"
-  version: "v0.0.4"
+  version: "v0.0.6"
   is_admin: true
   is_official: true
 - path: "user-dist"
@@ -13,5 +12,5 @@
   github_repo: "hamster1963/nezha-dash-v2"
   release_asset: "dist.zip"
   author: "hamster1963"
-  version: "v2.3.1"
+  version: "v2.4.3"
   is_official: true

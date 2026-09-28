@@ -89,24 +89,6 @@ func (l *Localizer) T(orig string) string {
 	return intl.Get(orig)
 }
 
-// N translates a string, possibly substituting arguments into it along
-// the way. If len(args) is > 0, args1 is assumed to be the plural value
-// and plural translation is used.
-func (l *Localizer) N(orig string, args ...int) string {
-	l.mu.RLock()
-	intl, ok := l.intlMap[l.lang]
-	l.mu.RUnlock()
-	if !ok {
-		return orig
-	}
-
-	if len(args) == 0 {
-		return intl.Get(orig)
-	}
-	return fmt.Sprintf(intl.GetN(orig, orig+".plural", args[0]),
-		args[0])
-}
-
 // ErrorT produces an error with a translated error string.
 // Substitution is performed via the `T` function above, following
 // the same rules.

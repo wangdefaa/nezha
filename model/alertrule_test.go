@@ -27,7 +27,7 @@ func testCycleRules(t *testing.T) {
 			rule: &AlertRule{
 				Rules: []*Rule{
 					{
-						Type: "_cycle",
+						Type: "transfer_in_cycle",
 					},
 				},
 			},
@@ -40,7 +40,7 @@ func testCycleRules(t *testing.T) {
 			rule: &AlertRule{
 				Rules: []*Rule{
 					{
-						Type: "_cycle",
+						Type: "transfer_in_cycle",
 					},
 				},
 			},
@@ -131,6 +131,7 @@ func testGeneralRules(t *testing.T) {
 			rule: &AlertRule{
 				Rules: []*Rule{
 					{
+						Type:     "cpu",
 						Duration: 10,
 					},
 				},
@@ -144,6 +145,7 @@ func testGeneralRules(t *testing.T) {
 			rule: &AlertRule{
 				Rules: []*Rule{
 					{
+						Type:     "cpu",
 						Duration: 10,
 					},
 				},
@@ -157,6 +159,7 @@ func testGeneralRules(t *testing.T) {
 			rule: &AlertRule{
 				Rules: []*Rule{
 					{
+						Type:     "cpu",
 						Duration: 10,
 					},
 				},
@@ -170,6 +173,7 @@ func testGeneralRules(t *testing.T) {
 			rule: &AlertRule{
 				Rules: []*Rule{
 					{
+						Type:     "cpu",
 						Duration: 10,
 					},
 				},
@@ -183,6 +187,7 @@ func testGeneralRules(t *testing.T) {
 			rule: &AlertRule{
 				Rules: []*Rule{
 					{
+						Type:     "cpu",
 						Duration: 10,
 					},
 				},
@@ -211,6 +216,7 @@ func testCombinedRules(t *testing.T) {
 						Duration: 10,
 					},
 					{
+						Type:     "cpu",
 						Duration: 10,
 					},
 				},
@@ -228,6 +234,7 @@ func testCombinedRules(t *testing.T) {
 						Duration: 10,
 					},
 					{
+						Type:     "cpu",
 						Duration: 10,
 					},
 				},
@@ -241,6 +248,7 @@ func testCombinedRules(t *testing.T) {
 			rule: &AlertRule{
 				Rules: []*Rule{
 					{
+						Type:     "cpu",
 						Duration: 10,
 					},
 					{
@@ -258,9 +266,11 @@ func testCombinedRules(t *testing.T) {
 			rule: &AlertRule{
 				Rules: []*Rule{
 					{
+						Type:     "cpu",
 						Duration: 10,
 					},
 					{
+						Type:     "memory",
 						Duration: 30,
 					},
 				},
@@ -274,9 +284,11 @@ func testCombinedRules(t *testing.T) {
 			rule: &AlertRule{
 				Rules: []*Rule{
 					{
+						Type:     "cpu",
 						Duration: 10,
 					},
 					{
+						Type:     "memory",
 						Duration: 30,
 					},
 				},
@@ -417,7 +429,7 @@ func TestAlertRule_RetentionWindow(t *testing.T) {
 		{"zero duration only", &AlertRule{Rules: []*Rule{{Type: "cpu", Duration: 0}}}, 0},
 		{"mixed picks max", &AlertRule{Rules: []*Rule{{Type: "cpu", Duration: 0}, {Type: "cpu", Duration: 7}}}, 7},
 		{"offline keeps Duration", &AlertRule{Rules: []*Rule{{Type: "offline", Duration: 30}}}, 30},
-		{"cycle looks back one", &AlertRule{Rules: []*Rule{{Type: "net_in_speed_cycle"}}}, 1},
+		{"cycle looks back one", &AlertRule{Rules: []*Rule{{Type: "transfer_in_cycle"}}}, 1},
 	}
 	for _, c := range cases {
 		if got := c.rule.RetentionWindow(); got != c.want {
@@ -470,7 +482,7 @@ func TestAlertRule_CombinedRuleAccumulatesSamples(t *testing.T) {
 	}{
 		{"general3+general10", &AlertRule{Rules: []*Rule{{Type: "cpu", Duration: 3}, {Type: "memory", Duration: 10}}}, []bool{false, false}, 9, 10},
 		{"offline5+general10", &AlertRule{Rules: []*Rule{{Type: "offline", Duration: 5}, {Type: "cpu", Duration: 10}}}, []bool{false, false}, 9, 10},
-		{"transfer+general8", &AlertRule{Rules: []*Rule{{Type: "net_in_speed_cycle"}, {Type: "cpu", Duration: 8}}}, []bool{false, false}, 7, 8},
+		{"transfer+general8", &AlertRule{Rules: []*Rule{{Type: "transfer_in_cycle"}, {Type: "cpu", Duration: 8}}}, []bool{false, false}, 7, 8},
 		{"offline3+offline12", &AlertRule{Rules: []*Rule{{Type: "offline", Duration: 3}, {Type: "offline", Duration: 12}}}, []bool{false, false}, 11, 12},
 	}
 	for _, c := range cases {

@@ -129,8 +129,8 @@ func TestServiceCoverMode_KnownValues(t *testing.T) {
 	assert.Equal(t, coverModeAllowList, serviceCoverMode(model.ServiceCoverIgnoreAll))
 }
 
-func TestSkipServersToDenyList_FiltersOnlyTrue(t *testing.T) {
-	got := skipServersToDenyList(map[uint64]bool{1: true, 2: false, 3: true})
+func TestEnabledIDs_FiltersOnlyTrue(t *testing.T) {
+	got := model.EnabledIDs(map[uint64]bool{1: true, 2: false, 3: true})
 	assert.ElementsMatch(t, []uint64{1, 3}, got,
 		"only true entries are real skips; false-valued entries must not be promoted to deny-list")
 }

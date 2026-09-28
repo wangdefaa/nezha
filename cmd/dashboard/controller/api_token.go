@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -17,9 +16,9 @@ import (
 )
 
 const (
-	apiTokenSecretLength    = 32                          // 明文 token 随机部分长度（hex 编码前）
-	apiTokenCtxKey          = "nz_api_token"              // #nosec G101 -- gin context key name, not a credential
-	apiTokenLastUsedCtxKey  = "nz_api_token_used_marker"  // #nosec G101 -- gin context key name, not a credential
+	apiTokenSecretLength     = 32                         // 明文 token 随机部分长度（base62 字符数）
+	apiTokenCtxKey           = model.CtxKeyAPIToken       // 与 model 层 HasPermission 读取的键统一，只写一次
+	apiTokenLastUsedCtxKey   = "nz_api_token_used_marker" // #nosec G101 -- gin context key name, not a credential
 	apiTokenAuthSchemePrefix = "Bearer "
 )
 
@@ -55,102 +54,26 @@ func createAPIToken(c *gin.Context) (*model.APITokenCreateResponse, error) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		return nil, err
 	}
-	req.Name = strings.TrimSpace(req.Name)
-	if req.Name == "" {
-		return nil, errors.New("name required")
+	if err := validateAPITokenRequest(&req); err != nil {
+		return nil, err
 	}
-	if len(req.Name) > 128 {
-		return nil, errors.New("name too long (max 128 chars)")
-	}
-	if req.ExpiresInDays < 0 {
-		return nil, errors.New("expires_in_days must be >= 0")
-	}
-	if req.ExpiresInDays > 3650 {
-		return nil, errors.New("expires_in_days too large (max 3650, i.e. 10 years)")
-	}
-	if len(req.Scopes) > 32 {
-		return nil, errors.New("too many scopes (max 32)")
-	}
-	if len(req.ServerIDs) > 1000 {
-		return nil, errors.New("too many server_ids (max 1000)")
-	}
-
-	allowed := append(append([]string{}, model.AllScopes...), model.AdminOnlyScopes...)
-	seen := make(map[string]struct{}, len(req.Scopes))
-	cleaned := make([]string, 0, len(req.Scopes))
-	for _, s := range req.Scopes {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			continue
-		}
-		if !slices.Contains(allowed, s) {
-			return nil, errors.New("unknown scope: " + s)
-		}
-		if _, dup := seen[s]; dup {
-			continue
-		}
-		seen[s] = struct{}{}
-		cleaned = append(cleaned, s)
-	}
-	if len(cleaned) == 0 {
-		return nil, errors.New("at least one scope required")
-	}
-
-	if !callerIsAdmin(c) {
-		for _, s := range cleaned {
-			if slices.Contains(model.AdminOnlyScopes, s) {
-				return nil, errors.New("only admin can issue scope: " + s)
-			}
-		}
-	}
-
-	if len(req.ServerIDs) > 0 {
-		seenSrv := make(map[uint64]struct{}, len(req.ServerIDs))
-		deduped := make([]uint64, 0, len(req.ServerIDs))
-		for _, sid := range req.ServerIDs {
-			if sid == 0 {
-				return nil, errors.New("server_id 0 is invalid")
-			}
-			if _, dup := seenSrv[sid]; dup {
-				continue
-			}
-			seenSrv[sid] = struct{}{}
-			deduped = append(deduped, sid)
-			server, _ := singleton.ServerShared.Get(sid)
-			if server == nil {
-				return nil, errors.New("server not found")
-			}
-			if !callerIsAdmin(c) && !server.HasPermission(c) {
-				return nil, errors.New("permission denied on server")
-			}
-		}
-		req.ServerIDs = deduped
-	}
-
-	secret, err := utils.GenerateRandomString(apiTokenSecretLength)
+	isAdmin := callerIsAdmin(c)
+	scopes, err := cleanAPITokenScopes(req.Scopes, isAdmin)
 	if err != nil {
 		return nil, err
 	}
-	plaintext := model.APITokenPrefix + secret
-
-	tok := model.APIToken{
-		UserID:    getUid(c),
-		Name:      req.Name,
-		TokenHash: model.HashAPIToken(plaintext),
-	}
-	tok.SetScopes(cleaned)
-	if len(req.ServerIDs) > 0 {
-		tok.SetServerIDs(req.ServerIDs)
-	}
-	if req.ExpiresInDays > 0 {
-		exp := time.Now().Add(time.Duration(req.ExpiresInDays) * 24 * time.Hour)
-		tok.ExpiresAt = &exp
+	serverIDs, err := checkAPITokenServers(c, req.ServerIDs, isAdmin)
+	if err != nil {
+		return nil, err
 	}
 
+	plaintext, tok, err := newAPIToken(getUid(c), req.Name, scopes, serverIDs, req.ExpiresInDays)
+	if err != nil {
+		return nil, err
+	}
 	if err := singleton.DB.Create(&tok).Error; err != nil {
 		return nil, newGormError("%v", err)
 	}
-
 	return &model.APITokenCreateResponse{
 		ID:        tok.ID,
 		Name:      tok.Name,
@@ -161,6 +84,97 @@ func createAPIToken(c *gin.Context) (*model.APITokenCreateResponse, error) {
 	}, nil
 }
 
+// validateAPITokenRequest 规整名称并校验各字段上限（binding 标签之外的业务约束）。
+func validateAPITokenRequest(req *model.APITokenCreateRequest) error {
+	req.Name = strings.TrimSpace(req.Name)
+	switch {
+	case req.Name == "":
+		return errors.New("name required")
+	case len(req.Name) > 128:
+		return errors.New("name too long (max 128 chars)")
+	case req.ExpiresInDays < 0:
+		return errors.New("expires_in_days must be >= 0")
+	case req.ExpiresInDays > 3650:
+		return errors.New("expires_in_days too large (max 3650, i.e. 10 years)")
+	case len(req.Scopes) > 32:
+		return errors.New("too many scopes (max 32)")
+	case len(req.ServerIDs) > 1000:
+		return errors.New("too many server_ids (max 1000)")
+	}
+	return nil
+}
+
+// cleanAPITokenScopes 去空白、去重并校验 scope 合法；非 admin 不能签发 admin-only scope。
+func cleanAPITokenScopes(scopes []string, isAdmin bool) ([]string, error) {
+	allowed := append(append([]string{}, model.AllScopes...), model.AdminOnlyScopes...)
+	cleaned := make([]string, 0, len(scopes))
+	for _, s := range scopes {
+		s = strings.TrimSpace(s)
+		if s == "" || slices.Contains(cleaned, s) {
+			continue
+		}
+		if !slices.Contains(allowed, s) {
+			return nil, errors.New("unknown scope: " + s)
+		}
+		cleaned = append(cleaned, s)
+	}
+	if len(cleaned) == 0 {
+		return nil, errors.New("at least one scope required")
+	}
+	if !isAdmin {
+		for _, s := range cleaned {
+			if slices.Contains(model.AdminOnlyScopes, s) {
+				return nil, errors.New("only admin can issue scope: " + s)
+			}
+		}
+	}
+	return cleaned, nil
+}
+
+// checkAPITokenServers 去重 server 白名单，并确认每台 server 存在且调用方有权限（admin 免权限检查）。
+func checkAPITokenServers(c *gin.Context, ids []uint64, isAdmin bool) ([]uint64, error) {
+	if len(ids) == 0 {
+		return ids, nil
+	}
+	deduped := make([]uint64, 0, len(ids))
+	for _, sid := range ids {
+		if sid == 0 {
+			return nil, errors.New("server_id 0 is invalid")
+		}
+		if slices.Contains(deduped, sid) {
+			continue
+		}
+		deduped = append(deduped, sid)
+		server, _ := singleton.ServerShared.Get(sid)
+		if server == nil {
+			return nil, errors.New("server not found")
+		}
+		if !isAdmin && !server.HasPermission(c) {
+			return nil, errors.New("permission denied on server")
+		}
+	}
+	return deduped, nil
+}
+
+// newAPIToken 生成明文 token 并构造待入库的 PAT（库里只存哈希）；expiresInDays 为 0 表示永不过期。
+func newAPIToken(uid uint64, name string, scopes []string, serverIDs []uint64, expiresInDays int) (string, model.APIToken, error) {
+	secret, err := utils.GenerateRandomString(apiTokenSecretLength)
+	if err != nil {
+		return "", model.APIToken{}, err
+	}
+	plaintext := model.APITokenPrefix + secret
+	tok := model.APIToken{UserID: uid, Name: name, TokenHash: model.HashAPIToken(plaintext)}
+	tok.SetScopes(scopes)
+	if len(serverIDs) > 0 {
+		tok.SetServerIDs(serverIDs)
+	}
+	if expiresInDays > 0 {
+		exp := time.Now().Add(time.Duration(expiresInDays) * 24 * time.Hour)
+		tok.ExpiresAt = &exp
+	}
+	return plaintext, tok, nil
+}
+
 // deleteAPIToken 吊销一个 PAT。
 // @Summary Revoke API token
 // @Tags auth required
@@ -169,8 +183,7 @@ func createAPIToken(c *gin.Context) (*model.APITokenCreateResponse, error) {
 // @Success 200 {object} model.CommonResponse[any]
 // @Router /api-tokens/{id} [delete]
 func deleteAPIToken(c *gin.Context) (any, error) {
-	idStr := c.Param("id")
-	id, err := strconv.ParseUint(idStr, 10, 64)
+	id, err := paramID(c)
 	if err != nil {
 		return nil, err
 	}
@@ -185,10 +198,7 @@ func deleteAPIToken(c *gin.Context) (any, error) {
 	if res.RowsAffected == 0 {
 		return nil, errors.New("not found")
 	}
-	// Fan out the revocation to any active long-lived connection that
-	// carries this PAT — ws/server, ws/transfer, terminal, FM. Without
-	// this hook a deleted PAT keeps streaming until the underlying
-	// connection naturally drops.
+	// 同步断开持有该 PAT 的长连接（目前只有 ws/server），否则已删 PAT 会一直推流到连接自然断开。
 	patConnectionRegistryShared.revokeToken(id)
 	return nil, nil
 }
@@ -219,7 +229,7 @@ func apiTokenAuthMiddleware() gin.HandlerFunc {
 		err := singleton.DB.Where("token_hash = ?", model.HashAPIToken(plaintext)).First(&tok).Error
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				model.BlockIP(singleton.DB, realIP, model.WAFBlockReasonTypeBruteForceToken, model.BlockIDToken)
+				blockBruteForceToken(c)
 				abortAPITokenUnauthorized(c, "invalid api token")
 				return
 			}
@@ -228,14 +238,14 @@ func apiTokenAuthMiddleware() gin.HandlerFunc {
 		}
 		now := time.Now()
 		if tok.IsExpired(now) {
-			model.BlockIP(singleton.DB, realIP, model.WAFBlockReasonTypeBruteForceToken, model.BlockIDToken)
+			blockBruteForceToken(c)
 			abortAPITokenUnauthorized(c, "api token expired")
 			return
 		}
 
 		var user model.User
 		if err := singleton.DB.First(&user, tok.UserID).Error; err != nil {
-			model.BlockIP(singleton.DB, realIP, model.WAFBlockReasonTypeBruteForceToken, model.BlockIDToken)
+			blockBruteForceToken(c)
 			abortAPITokenUnauthorized(c, "owner of api token not found")
 			return
 		}
@@ -244,7 +254,6 @@ func apiTokenAuthMiddleware() gin.HandlerFunc {
 
 		c.Set(model.CtxKeyAuthorizedUser, &user)
 		c.Set(apiTokenCtxKey, &tok)
-		c.Set(model.CtxKeyAPIToken, &tok)
 
 		// last_used 同步更新：开销极低（一行 UPDATE），异步路径在
 		// 多连接 sqlite 测试场景下会和测试 teardown 形成竞态，并把
@@ -255,7 +264,7 @@ func apiTokenAuthMiddleware() gin.HandlerFunc {
 				Where("id = ?", tok.ID).
 				Updates(map[string]any{
 					"last_used_at": now,
-					"last_used_ip": c.GetString(model.CtxKeyRealIPStr),
+					"last_used_ip": realIP,
 				}).Error
 		}
 	}
@@ -268,8 +277,8 @@ func abortAPITokenUnauthorized(c *gin.Context, reason string) {
 	})
 }
 
-// APITokenFromContext 取当前请求关联的 PAT，未命中返回 nil。
-// MCP tool 中间件用它做 scope 校验（闸 2）。
+// APITokenFromContext 取当前请求关联的 PAT，未命中（JWT/匿名）返回 nil。
+// restScopeMiddleware（闸 2）、csrfMiddleware、PAT 禁用端点等据此区分 PAT 请求。
 func APITokenFromContext(c *gin.Context) *model.APIToken {
 	v, ok := c.Get(apiTokenCtxKey)
 	if !ok {

@@ -116,49 +116,40 @@ func wafStream(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handl
 
 func DispatchTask(serviceSentinelDispatchBus <-chan *model.Service) {
 	for task := range serviceSentinelDispatchBus {
-		if task == nil {
+		probe := dispatchProbe(task)
+		if probe == nil {
 			continue
 		}
-
-		switch task.Cover {
-		case model.ServiceCoverIgnoreAll:
-			for id, enabled := range task.SkipServers {
-				if !enabled {
-					continue
-				}
-
-				server, _ := singleton.ServerShared.Get(id)
-				if server == nil {
-					continue
-				}
-				if !canSendTaskToServer(task, server) {
-					continue
-				}
-				// SendTask 走 holder-scoped send mutex，避免与 cron /
-				// server-transfer / MCP CallAgent / fs.transfer 等并发
-				// SendMsg 同一 RequestTask stream。
-				if err := server.SendTask(task.PB()); err != nil &&
-					!errors.Is(err, model.ErrTaskStreamOffline) {
-					log.Printf("NEZHA>> DispatchTask send error (server=%d): %v", id, err)
-				}
+		// 快照后逐个 SendTask，不在 ServerShared 的 listMu.RLock 内做阻塞
+		// gRPC：否则一个卡死 agent 会拖死需要写锁的 server 生命周期操作。
+		for id, server := range singleton.ServerShared.GetList() {
+			if server == nil || !task.CoversServer(id) || !canSendTaskToServer(task, server) {
+				continue
 			}
-		case model.ServiceCoverAll:
-			// 快照后逐个 SendTask，不在 ServerShared 的 listMu.RLock 内做阻塞
-			// gRPC：否则一个卡死 agent 会拖死需要写锁的 server 生命周期操作。
-			for id, server := range singleton.ServerShared.GetList() {
-				if server == nil || task.SkipServers[id] {
-					continue
-				}
-				if !canSendTaskToServer(task, server) {
-					continue
-				}
-				if err := server.SendTask(task.PB()); err != nil &&
-					!errors.Is(err, model.ErrTaskStreamOffline) {
-					log.Printf("NEZHA>> DispatchTask send error (server=%d): %v", id, err)
-				}
+			// SendTask 走 holder-scoped send mutex，避免与 keepalive /
+			// force-update 并发 SendMsg 同一 RequestTask stream。
+			if err := server.SendTask(probe); err != nil &&
+				!errors.Is(err, model.ErrTaskStreamOffline) {
+				log.Printf("NEZHA>> DispatchTask send error (server=%d): %v", id, err)
 			}
 		}
 	}
+}
+
+// dispatchProbe 校验监控类型并生成下发任务；不合法时记日志并返回 nil。
+func dispatchProbe(task *model.Service) *proto.Task {
+	if task == nil {
+		return nil
+	}
+	if err := model.ValidateServiceMonitorType(uint64(task.Type)); err != nil {
+		log.Printf("NEZHA>> DispatchTask rejected service %d: %v", task.ID, err)
+		return nil
+	}
+	probe := task.PB()
+	if probe == nil {
+		log.Printf("NEZHA>> DispatchTask rejected service %d: invalid probe", task.ID)
+	}
+	return probe
 }
 
 func DispatchKeepalive() {
@@ -177,14 +168,5 @@ func DispatchKeepalive() {
 }
 
 func canSendTaskToServer(task *model.Service, server *model.Server) bool {
-	var role model.Role
-	singleton.UserLock.RLock()
-	if u, ok := singleton.UserInfoMap[task.UserID]; !ok {
-		role = model.RoleMember
-	} else {
-		role = u.Role
-	}
-	singleton.UserLock.RUnlock()
-
-	return task.UserID == server.GetUserID() || role.IsAdmin()
+	return task.UserID == server.GetUserID() || singleton.UserRole(task.UserID).IsAdmin()
 }

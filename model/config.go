@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -34,10 +35,9 @@ const (
 )
 
 type ConfigForGuests struct {
-	Language            string `koanf:"language" json:"language"` // 系统语言，默认 zh_CN
-	SiteName            string `koanf:"site_name" json:"site_name"`
-	CustomCode          string `koanf:"custom_code" json:"custom_code,omitempty"`
-	CustomCodeDashboard string `koanf:"custom_code_dashboard" json:"custom_code_dashboard,omitempty"`
+	Language   string `koanf:"language" json:"language"` // 系统语言，默认 zh_CN
+	SiteName   string `koanf:"site_name" json:"site_name"`
+	CustomCode string `koanf:"custom_code" json:"custom_code,omitempty"`
 }
 
 type ConfigDashboard struct {
@@ -51,11 +51,10 @@ type ConfigDashboard struct {
 
 	WebRealIPHeader   string `koanf:"web_real_ip_header" json:"web_real_ip_header,omitempty"`     // 前端真实IP
 	AgentRealIPHeader string `koanf:"agent_real_ip_header" json:"agent_real_ip_header,omitempty"` // Agent真实IP
-	UserTemplate      string `koanf:"user_template" json:"user_template,omitempty"`
-	AdminTemplate     string `koanf:"admin_template" json:"admin_template,omitempty"`
+	UserTemplate      string `koanf:"user_template" json:"user_template,omitempty"`               // 管理端固定内置 admin-dist，不可配置
 
 	// Agent 安装脚本地址（留空使用内置默认脚本）
-	InstallScriptLinux   string `koanf:"install_script_linux" json:"install_script_linux,omitempty"`   // Linux/macOS 安装脚本地址
+	InstallScriptLinux   string `koanf:"install_script_linux" json:"install_script_linux,omitempty"`     // Linux/macOS 安装脚本地址
 	InstallScriptWindows string `koanf:"install_script_windows" json:"install_script_windows,omitempty"` // Windows 安装脚本地址
 
 	EnablePlainIPInNotification bool `koanf:"enable_plain_ip_in_notification" json:"enable_plain_ip_in_notification,omitempty"` // 通知信息IP不打码
@@ -79,13 +78,13 @@ type Config struct {
 	AgentSecretKey string `koanf:"agent_secret_key" json:"agent_secret_key,omitempty"`
 	JWTTimeout     int    `koanf:"jwt_timeout" json:"jwt_timeout,omitempty"` // JWT token过期时间（小时）
 
-	JWTSecretKey                   string `koanf:"jwt_secret_key" json:"-" yaml:"-"`
+	// json:"-" 防止经 API 泄露；落盘只走 patchYAMLField（整表序列化会丢掉它）
+	JWTSecretKey                   string `koanf:"jwt_secret_key" json:"-"`
 	JWTSecretKeyLastRotatedVersion string `koanf:"jwt_secret_key_last_rotated_version" json:"jwt_secret_key_last_rotated_version,omitempty"`
 	ListenPort                     uint16 `koanf:"listen_port" json:"listen_port,omitempty"`
 	ListenHost                     string `koanf:"listen_host" json:"listen_host,omitempty"`
 
-	jwtSecretFromEnv  bool `koanf:"-" json:"-" yaml:"-"`
-	jwtSecretFromYAML bool `koanf:"-" json:"-" yaml:"-"`
+	jwtSecretFromEnv bool // 由 NZ_JWTSECRETKEY 注入：不落盘、不做版本轮换
 
 	// oauth2 配置
 	Oauth2 map[string]*Oauth2Config `koanf:"oauth2" json:"oauth2,omitempty"`
@@ -107,7 +106,6 @@ type Config struct {
 }
 
 type HTTPSConf struct {
-	InsecureTLS bool   `koanf:"insecure_tls" json:"insecure_tls,omitempty"`
 	ListenPort  uint16 `koanf:"listen_port" json:"listen_port,omitempty"`
 	TLSCertPath string `koanf:"tls_cert_path" json:"tls_cert_path,omitempty"`
 	TLSKeyPath  string `koanf:"tls_key_path" json:"tls_key_path,omitempty"`
@@ -137,30 +135,39 @@ type DatabaseConf struct {
 	DSN string `koanf:"dsn" json:"dsn,omitempty"`
 }
 
-// Read 读取配置文件并应用
+// Read 读取配置（env 与 yaml），补齐缺省值；缺失的密钥首启生成并写回 yaml。
 func (c *Config) Read(path string, frontendTemplates []FrontendTemplate) error {
 	c.k = koanf.New(".")
 	c.filePath = path
+	if err := c.load(); err != nil {
+		return err
+	}
+	c.applyDefaults(frontendTemplates)
+	if err := c.ensureJWTSecret(); err != nil {
+		return err
+	}
+	return c.ensureAgentSecret()
+}
 
+// load 先载入 NZ_ 前缀环境变量，再合并 yaml 文件（文件不存在则跳过）。
+func (c *Config) load() error {
 	err := c.k.Load(env.Provider("NZ_", ".", func(s string) string {
 		return strings.ReplaceAll(strings.ToLower(strings.TrimPrefix(s, "NZ_")), "_", ".")
 	}), nil)
 	if err != nil {
 		return err
 	}
-
-	if _, err := os.Stat(path); err == nil {
-		err = c.k.Load(file.Provider(path), new(utils.KubeYAML), koanf.WithMergeFunc(mergeDedup))
+	if _, err := os.Stat(c.filePath); err == nil {
+		err = c.k.Load(file.Provider(c.filePath), new(utils.KubeYAML), koanf.WithMergeFunc(mergeDedup))
 		if err != nil {
 			return err
 		}
 	}
+	return c.k.UnmarshalWithConf("", c, koanfConf(c))
+}
 
-	err = c.k.UnmarshalWithConf("", c, koanfConf(c))
-	if err != nil {
-		return err
-	}
-
+// applyDefaults 补齐缺省值；user_template 只能指向已登记的访客主题。
+func (c *Config) applyDefaults(frontendTemplates []FrontendTemplate) {
 	if c.ListenPort == 0 {
 		c.ListenPort = 8008
 	}
@@ -170,23 +177,10 @@ func (c *Config) Read(path string, frontendTemplates []FrontendTemplate) error {
 	if c.Location == "" {
 		c.Location = "Asia/Shanghai"
 	}
-	var userTemplateValid, adminTemplateValid bool
-	for _, v := range frontendTemplates {
-		if !userTemplateValid && v.Path == c.UserTemplate && !v.IsAdmin {
-			userTemplateValid = true
-		}
-		if !adminTemplateValid && v.Path == c.AdminTemplate && v.IsAdmin {
-			adminTemplateValid = true
-		}
-		if userTemplateValid && adminTemplateValid {
-			break
-		}
-	}
-	if c.UserTemplate == "" || !userTemplateValid {
-		c.UserTemplate = "user-dist"
-	}
-	if c.AdminTemplate == "" || !adminTemplateValid {
-		c.AdminTemplate = "admin-dist"
+	if !slices.ContainsFunc(frontendTemplates, func(v FrontendTemplate) bool {
+		return v.Path == c.UserTemplate && !v.IsAdmin
+	}) {
+		c.UserTemplate = DefaultUserTemplate
 	}
 	if c.AvgPingCount == 0 {
 		c.AvgPingCount = 2
@@ -194,86 +188,78 @@ func (c *Config) Read(path string, frontendTemplates []FrontendTemplate) error {
 	if c.Cover == 0 {
 		c.Cover = 1
 	}
-	if envSecret := os.Getenv(JWTSecretEnvKey); envSecret != "" {
-		c.JWTSecretKey = envSecret
-		c.jwtSecretFromEnv = true
-	} else if c.JWTSecretKey != "" {
-		c.jwtSecretFromYAML = true
-		log.Printf("NEZHA>> jwt_secret_key loaded from config.yaml; recommend injecting via env %s to keep it off disk", JWTSecretEnvKey)
-	}
-
-	if c.JWTSecretKey == "" {
-		generated, err := utils.GenerateRandomString(1024)
-		if err != nil {
-			return err
-		}
-		c.JWTSecretKey = generated
-		c.jwtSecretFromYAML = true
-		log.Printf("NEZHA>> generated new jwt_secret_key; wrote to config.yaml. For production, inject via env %s and remove the field from config.yaml.", JWTSecretEnvKey)
-		if err := c.patchYAMLField("jwt_secret_key", generated); err != nil {
-			return err
-		}
-	}
-
-	// Add JWTTimeout default check
 	if c.JWTTimeout == 0 {
 		c.JWTTimeout = 1
 	}
+}
 
-	if c.AgentSecretKey == "" {
-		c.AgentSecretKey, err = utils.GenerateRandomString(32)
-		if err != nil {
-			return err
-		}
-		if err = c.Save(); err != nil {
-			return err
-		}
+// ensureJWTSecret 确定 JWT 签名密钥：env 注入优先且不落盘；否则用 yaml 里的值，缺失时生成并写回。
+func (c *Config) ensureJWTSecret() error {
+	if envSecret := os.Getenv(JWTSecretEnvKey); envSecret != "" {
+		c.JWTSecretKey = envSecret
+		c.jwtSecretFromEnv = true
+		return nil
 	}
-
-	return nil
+	if c.JWTSecretKey != "" {
+		log.Printf("NEZHA>> jwt_secret_key loaded from config.yaml; recommend injecting via env %s to keep it off disk", JWTSecretEnvKey)
+		return nil
+	}
+	generated, err := utils.GenerateRandomString(1024)
+	if err != nil {
+		return err
+	}
+	c.JWTSecretKey = generated
+	log.Printf("NEZHA>> generated new jwt_secret_key; wrote to config.yaml. For production, inject via env %s and remove the field from config.yaml.", JWTSecretEnvKey)
+	return c.patchYAMLField("jwt_secret_key", generated)
 }
 
-// Save 保存配置文件
-func (c *Config) Save() error {
-	return c.save()
+// ensureAgentSecret 缺失时生成 agent 通信密钥并只补写这一个键。
+func (c *Config) ensureAgentSecret() error {
+	if c.AgentSecretKey != "" {
+		return nil
+	}
+	secret, err := utils.GenerateRandomString(32)
+	if err != nil {
+		return err
+	}
+	c.AgentSecretKey = secret
+	return c.patchYAMLField("agent_secret_key", secret)
 }
 
+// RotateJWTSecretKeyIfNeeded 升级跨过基线版本时轮换一次签名密钥，并记录已处理到的版本。
+// env 注入的密钥与 debug 构建（版本号不可比较）跳过。
 func (c *Config) RotateJWTSecretKeyIfNeeded(currentVersion string) (bool, error) {
-	if c.jwtSecretFromEnv {
-		return false, nil
-	}
-
 	currentVersion = strings.TrimSpace(currentVersion)
-	if compareVersion(currentVersion, JWTSecretKeyRotationBaselineVersion) < 0 {
+	if c.jwtSecretFromEnv || compareVersion(currentVersion, JWTSecretKeyRotationBaselineVersion) < 0 {
 		return false, nil
 	}
-
-	initialMarker := c.JWTSecretKeyLastRotatedVersion
-	shouldRotate := c.JWTSecretKeyLastRotatedVersion == "" || compareVersion(c.JWTSecretKeyLastRotatedVersion, JWTSecretKeyRotationBaselineVersion) < 0
+	marker := c.JWTSecretKeyLastRotatedVersion
+	shouldRotate := marker == "" || compareVersion(marker, JWTSecretKeyRotationBaselineVersion) < 0
+	if !shouldRotate && marker == currentVersion {
+		return false, nil
+	}
 	if shouldRotate {
-		secret, err := utils.GenerateRandomString(1024)
-		if err != nil {
+		if err := c.rotateJWTSecret(); err != nil {
 			return false, err
 		}
-		c.JWTSecretKey = secret
 	}
-
 	c.JWTSecretKeyLastRotatedVersion = currentVersion
-
-	if !shouldRotate && c.JWTSecretKeyLastRotatedVersion == initialMarker {
-		return false, nil
-	}
-	if shouldRotate {
-		if err := c.patchYAMLField("jwt_secret_key", c.JWTSecretKey); err != nil {
-			return false, err
-		}
-	}
-	if err := c.patchYAMLField("jwt_secret_key_last_rotated_version", c.JWTSecretKeyLastRotatedVersion); err != nil {
+	if err := c.patchYAMLField("jwt_secret_key_last_rotated_version", currentVersion); err != nil {
 		return false, err
 	}
 	return shouldRotate, nil
 }
 
+func (c *Config) rotateJWTSecret() error {
+	secret, err := utils.GenerateRandomString(1024)
+	if err != nil {
+		return err
+	}
+	c.JWTSecretKey = secret
+	return c.patchYAMLField("jwt_secret_key", secret)
+}
+
+// patchYAMLField 只改写 yaml 中的单个键，保留其余内容，文件权限 0600。
 func (c *Config) patchYAMLField(key string, value any) error {
 	dir := filepath.Dir(c.filePath)
 	if err := os.MkdirAll(dir, 0750); err != nil {
@@ -297,24 +283,6 @@ func (c *Config) patchYAMLField(key string, value any) error {
 		return err
 	}
 	return os.WriteFile(c.filePath, out, 0600)
-}
-
-func (c *Config) save() error {
-	data, err := yaml.Marshal(c)
-	if err != nil {
-		return err
-	}
-
-	return c.write(data)
-}
-
-func (c *Config) write(data []byte) error {
-	dir := filepath.Dir(c.filePath)
-	if err := os.MkdirAll(dir, 0750); err != nil {
-		return err
-	}
-
-	return os.WriteFile(c.filePath, data, 0600)
 }
 
 func compareVersion(left, right string) int {

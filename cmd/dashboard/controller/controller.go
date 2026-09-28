@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	jwt "github.com/appleboy/gin-jwt/v2"
@@ -18,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	swaggerfiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
+	"gorm.io/gorm"
 
 	"github.com/nezhahq/nezha/cmd/dashboard/controller/waf"
 	docs "github.com/nezhahq/nezha/cmd/dashboard/docs"
@@ -29,20 +31,18 @@ import (
 func ServeWeb(frontendDist fs.FS) http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
-	r.MaxMultipartMemory = 64 << 20 // 主题 zip 上传缓冲上限
+	r.MaxMultipartMemory = 64 << 20 // multipart 内存缓冲阈值（超出落临时盘）；请求体总上限见 limitRequestBody
 
 	if singleton.Conf.Debug {
 		gin.SetMode(gin.DebugMode)
 		pprof.Register(r)
-	}
-	if singleton.Conf.Debug {
 		log.Printf("NEZHA>> Swagger(%s) UI available at http://localhost:%d/swagger/index.html", docs.SwaggerInfo.Version, singleton.Conf.ListenPort)
 		r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
 	}
 
 	r.Use(waf.RealIp)
 	r.Use(waf.Waf)
-	r.Use(recordPath)
+	r.Use(limitRequestBody)
 
 	routers(r, frontendDist)
 
@@ -93,6 +93,7 @@ func routers(r *gin.Engine, frontendDist fs.FS) {
 	// 「自我管理」类端点 — 显式禁止 PAT 访问（避免 PAT 自我提权链）。
 	patForbidden := restPATForbiddenMiddleware()
 	auth.POST("/refresh-token", patForbidden, authMiddleware.RefreshHandler)
+	auth.POST("/logout", patForbidden, commonHandler(logout))
 	auth.GET("/profile", patForbidden, commonHandler(getProfile))
 	auth.POST("/profile", patForbidden, commonHandler(updateProfile))
 	auth.POST("/oauth2/:provider/unbind", patForbidden, commonHandler(unbindOauth2))
@@ -156,14 +157,6 @@ func routers(r *gin.Engine, frontendDist fs.FS) {
 	r.NoRoute(fallbackToFrontend(frontendDist))
 }
 
-func recordPath(c *gin.Context) {
-	url := c.Request.URL.String()
-	for _, p := range c.Params {
-		url = strings.Replace(url, p.Value, ":"+p.Key, 1)
-	}
-	c.Set("MatchedPath", url)
-}
-
 func newErrorResponse(err error) model.CommonResponse[any] {
 	return model.CommonResponse[any]{
 		Success: false,
@@ -218,20 +211,25 @@ func commonHandler[T any](handler handlerFunc[T]) func(*gin.Context) {
 
 func adminHandler[T any](handler handlerFunc[T]) func(*gin.Context) {
 	return func(c *gin.Context) {
-		auth, ok := c.Get(model.CtxKeyAuthorizedUser)
-		if !ok {
-			c.JSON(http.StatusOK, newErrorResponse(singleton.Localizer.ErrorT("unauthorized")))
-			return
+		if requireAdmin(c) {
+			handle(c, handler)
 		}
-
-		user := *auth.(*model.User)
-		if !user.Role.IsAdmin() {
-			c.JSON(http.StatusOK, newErrorResponse(singleton.Localizer.ErrorT("permission denied")))
-			return
-		}
-
-		handle(c, handler)
 	}
+}
+
+// requireAdmin 校验当前登录用户为管理员；不满足时写入错误响应并返回 false。
+func requireAdmin(c *gin.Context) bool {
+	auth, _ := c.Get(model.CtxKeyAuthorizedUser)
+	user, ok := auth.(*model.User)
+	if !ok || user == nil {
+		c.JSON(http.StatusOK, newErrorResponse(singleton.Localizer.ErrorT("unauthorized")))
+		return false
+	}
+	if !user.Role.IsAdmin() {
+		c.JSON(http.StatusOK, newErrorResponse(singleton.Localizer.ErrorT("permission denied")))
+		return false
+	}
+	return true
 }
 
 func handle[T any](c *gin.Context, handler handlerFunc[T]) {
@@ -272,31 +270,11 @@ func listHandler[S ~[]E, E model.CommonInterface](handler handlerFunc[S]) func(*
 	}
 }
 
-func pCommonHandler[S ~[]E, E any](handler pHandlerFunc[S, E]) func(*gin.Context) {
-	return func(c *gin.Context) {
-		data, err := handler(c)
-		if err != nil {
-			c.JSON(http.StatusOK, newErrorResponse(err))
-			return
-		}
-
-		c.JSON(http.StatusOK, model.PaginatedResponse[S, E]{Success: true, Data: data})
-	}
-}
-
 func pAdminHandler[S ~[]E, E any](handler pHandlerFunc[S, E]) func(*gin.Context) {
 	return func(c *gin.Context) {
-		auth, ok := c.Get(model.CtxKeyAuthorizedUser)
-		if !ok {
-			c.JSON(http.StatusOK, newErrorResponse(singleton.Localizer.ErrorT("unauthorized")))
+		if !requireAdmin(c) {
 			return
 		}
-		user := *auth.(*model.User)
-		if !user.Role.IsAdmin() {
-			c.JSON(http.StatusOK, newErrorResponse(singleton.Localizer.ErrorT("permission denied")))
-			return
-		}
-
 		data, err := handler(c)
 		if err != nil {
 			c.JSON(http.StatusOK, newErrorResponse(err))
@@ -318,6 +296,57 @@ func getUid(c *gin.Context) uint64 {
 	return user.ID
 }
 
+// paramID 解析路径参数 :id；非法时原样返回 strconv 的错误。
+func paramID(c *gin.Context) (uint64, error) {
+	return strconv.ParseUint(c.Param("id"), 10, 64)
+}
+
+// parsePagination 读取 limit/offset 查询参数：limit 非法或 <1 取 25，offset 非法或 <0 取 0。
+func parsePagination(c *gin.Context) (limit, offset int) {
+	limit, err := strconv.Atoi(c.Query("limit"))
+	if err != nil || limit < 1 {
+		limit = 25
+	}
+	offset, err = strconv.Atoi(c.Query("offset"))
+	if err != nil || offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
+
+// uniqueIDs 原地排序并去重。slices.Compact 只合并相邻重复，[1,2,1] 这类输入必须先排序，
+// 否则后续按 len(ids) 比对存在性会误报“有非法 id”。
+func uniqueIDs(ids []uint64) []uint64 {
+	slices.Sort(ids)
+	return slices.Compact(ids)
+}
+
+// ensureIDsExist 确认 ids 在 m 对应的表里全部存在（ids 需已去重），否则返回 invalid。
+func ensureIDsExist(m any, ids []uint64, invalid error) error {
+	var count int64
+	if err := singleton.DB.Model(m).Where("id in (?)", ids).Count(&count).Error; err != nil {
+		return newGormError("%v", err)
+	}
+	if count != int64(len(ids)) {
+		return invalid
+	}
+	return nil
+}
+
+// deleteWithMembers 在同一事务里物理删除主表记录（id in ids）与关联表中 memberCond 命中的成员行。
+func deleteWithMembers(owner, member any, memberCond string, ids []uint64) error {
+	err := singleton.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Unscoped().Delete(owner, "id in (?)", ids).Error; err != nil {
+			return err
+		}
+		return tx.Unscoped().Delete(member, memberCond, ids).Error
+	})
+	if err != nil {
+		return newGormError("%v", err)
+	}
+	return nil
+}
+
 // setFrontendCacheHeader 控制前端静态资源缓存：带内容哈希的构建产物（assets/）长缓存且 immutable；
 // 其余（index.html、SPA fallback、logo 等）一律 no-cache，确保主题换 hash 后刷新即取最新引用，避免白屏。
 func setFrontendCacheHeader(c *gin.Context, name string) {
@@ -328,147 +357,139 @@ func setFrontendCacheHeader(c *gin.Context, name string) {
 	c.Header("Cache-Control", "no-cache")
 }
 
+// frontendPageUrlRegistry 决定哪些 URL 走 index.html fallback 并返回 200；漏一条会让
+// 直接刷新该页面变成 404（body 仍是 index.html，浏览器内看起来正常，但监控 / 链接预览会以为站点挂了）。
+// 新增前端路由时必须与 nezha-admin-dash/src/main.tsx 同步。
+var frontendPageUrlRegistry = []*regexp.Regexp{
+	// official user frontend
+	regexp.MustCompile(`^/$`),
+	regexp.MustCompile(`^/server/\d*$`),
+	// backend frontend
+	regexp.MustCompile(`^/dashboard/$`),
+	regexp.MustCompile(`^/dashboard/login$`),
+	regexp.MustCompile(`^/dashboard/service$`),
+	regexp.MustCompile(`^/dashboard/notification$`),
+	regexp.MustCompile(`^/dashboard/alert-rule$`),
+	regexp.MustCompile(`^/dashboard/server-group$`),
+	regexp.MustCompile(`^/dashboard/notification-group$`),
+	regexp.MustCompile(`^/dashboard/profile$`),
+	regexp.MustCompile(`^/dashboard/settings$`),
+	regexp.MustCompile(`^/dashboard/settings/user$`),
+	regexp.MustCompile(`^/dashboard/settings/online-user$`),
+	regexp.MustCompile(`^/dashboard/settings/waf$`),
+	regexp.MustCompile(`^/dashboard/settings/api-tokens$`),
+	regexp.MustCompile(`^/dashboard/settings/theme$`),
+}
+
+func getFallbackStatusCode(path string) int {
+	for _, reg := range frontendPageUrlRegistry {
+		if reg.MatchString(path) {
+			return http.StatusOK
+		}
+	}
+	return http.StatusNotFound
+}
+
 func fallbackToFrontend(frontendDist fs.FS) func(*gin.Context) {
-	serveFile := func(c *gin.Context, name string, file fs.File, customStatusCode int) bool {
-		defer file.Close()
-		fileStat, err := file.Stat()
-		if err != nil {
-			return false
+	return func(c *gin.Context) {
+		path := c.Request.URL.Path
+		switch {
+		case strings.HasPrefix(path, "/api"):
+			c.JSON(http.StatusNotFound, newErrorResponse(errors.New("404 Not Found")))
+		case path == "/dashboard":
+			c.Redirect(http.StatusMovedPermanently, "/dashboard/")
+		// Only /dashboard/ belongs to the admin frontend; /dashboard.. must not be trimmed into ../.
+		case strings.HasPrefix(path, "/dashboard/"):
+			serveAdminFrontend(c, frontendDist, path)
+		default:
+			serveUserFrontend(c, frontendDist, path)
 		}
-		if fileStat.IsDir() {
-			return false
-		}
-		readSeeker, ok := file.(io.ReadSeeker)
-		if !ok {
-			return false
-		}
-		setFrontendCacheHeader(c, name)
-		http.ServeContent(utils.NewGinCustomWriter(c, customStatusCode), c.Request, name, fileStat.ModTime(), readSeeker)
+	}
+}
+
+// serveAdminFrontend 管理端固定内置 admin-dist：只走 serveBuiltin，不读 <ThemeDir> 磁盘，面板无法替换/更新。
+func serveAdminFrontend(c *gin.Context, frontendDist fs.FS, path string) {
+	stripPath := strings.TrimPrefix(path, "/dashboard/")
+	if serveBuiltin(c, frontendDist, singleton.AdminTemplatePath, stripPath, http.StatusOK) ||
+		serveBuiltin(c, frontendDist, singleton.AdminTemplatePath, "index.html", getFallbackStatusCode(path)) {
+		return
+	}
+	c.JSON(http.StatusNotFound, newErrorResponse(errors.New("404 Not Found")))
+}
+
+// serveUserFrontend 访客端：当前主题的静态文件 → 当前主题 index.html → 内置 user-dist 的 index.html（避免整站 404）。
+func serveUserFrontend(c *gin.Context, frontendDist fs.FS, path string) {
+	template := singleton.Conf.UserTemplate
+	fallbackStatusCode := getFallbackStatusCode(path)
+	if checkLocalFileOrFs(c, frontendDist, template, strings.TrimPrefix(path, "/"), http.StatusOK) ||
+		checkLocalFileOrFs(c, frontendDist, template, "index.html", fallbackStatusCode) {
+		return
+	}
+	if template != model.DefaultUserTemplate &&
+		checkLocalFileOrFs(c, frontendDist, model.DefaultUserTemplate, "index.html", fallbackStatusCode) {
+		return
+	}
+	c.JSON(http.StatusNotFound, newErrorResponse(errors.New("404 Not Found")))
+}
+
+// checkLocalFileOrFs 访客主题查找次序：磁盘 <ThemeDir>/<path>（自定义/更新版）→ 内置（serveBuiltin）；
+// 自定义主题没有 embed 兜底。
+func checkLocalFileOrFs(c *gin.Context, frontendFS fs.FS, templateRoot, filePath string, customStatusCode int) bool {
+	if filePath != "" && singleton.ThemeDir != "" &&
+		tryDiskRoot(c, filepath.Join(singleton.ThemeDir, templateRoot), filePath, customStatusCode) {
 		return true
 	}
-
-	// tryDiskRoot 在受限目录 dirRoot 内查找并返回 filePath（os.Root 把路径限制在 root 内，防 URL 穿越）。
-	tryDiskRoot := func(c *gin.Context, dirRoot, filePath string, code int) bool {
-		root, err := os.OpenRoot(dirRoot)
-		if err != nil {
-			return false
-		}
-		defer root.Close()
-		file, err := root.Open(filePath)
-		if err != nil {
-			return false
-		}
-		return serveFile(c, filePath, file, code)
+	if src, known := singleton.ThemeSourceOf(templateRoot); known && src != model.ThemeSourceBuiltin {
+		return false
 	}
+	return serveBuiltin(c, frontendFS, templateRoot, filePath, customStatusCode)
+}
 
-	checkLocalFileOrFs := func(c *gin.Context, frontendFS fs.FS, templateRoot, filePath string, customStatusCode int) bool {
-		// 查找次序：磁盘 <ThemeDir>/<path>（自定义/更新版）→ 内置 cwd 相对目录 → 内置 embed（出厂兜底）。
-		src, known := singleton.ThemeSourceOf(templateRoot)
-		builtin := !known || src == model.ThemeSourceBuiltin
-
-		if filePath != "" {
-			if singleton.ThemeDir != "" &&
-				tryDiskRoot(c, filepath.Join(singleton.ThemeDir, templateRoot), filePath, customStatusCode) {
-				return true
-			}
-			if builtin && tryDiskRoot(c, templateRoot, filePath, customStatusCode) {
-				return true
-			}
-		}
-
-		if !builtin {
-			return false // 自定义主题无 embed 兜底
-		}
-		if !fs.ValidPath(filePath) {
-			return false
-		}
-		templateFS, err := fs.Sub(frontendFS, templateRoot)
-		if err != nil {
-			return false
-		}
-		file, err := templateFS.Open(filePath)
-		if err != nil {
-			return false
-		}
-		return serveFile(c, filePath, file, customStatusCode)
+// serveBuiltin 内置主题：cwd 相对目录（兼容上游目录布局 + 单测 fixture）→ embed（出厂兜底）。
+func serveBuiltin(c *gin.Context, frontendFS fs.FS, templateRoot, filePath string, customStatusCode int) bool {
+	if filePath != "" && tryDiskRoot(c, templateRoot, filePath, customStatusCode) {
+		return true
 	}
-
-	frontendPageUrlRegistry := []*regexp.Regexp{
-		// official user frontend
-		regexp.MustCompile(`^/$`),
-		regexp.MustCompile(`^/server/\d*$`),
-		// backend frontend
-		regexp.MustCompile(`^/dashboard/$`),
-		regexp.MustCompile(`^/dashboard/login$`),
-		regexp.MustCompile(`^/dashboard/service$`),
-		regexp.MustCompile(`^/dashboard/notification$`),
-		regexp.MustCompile(`^/dashboard/alert-rule$`),
-		regexp.MustCompile(`^/dashboard/server-group$`),
-		regexp.MustCompile(`^/dashboard/notification-group$`),
-		regexp.MustCompile(`^/dashboard/profile$`),
-		regexp.MustCompile(`^/dashboard/settings$`),
-		regexp.MustCompile(`^/dashboard/settings/user$`),
-		regexp.MustCompile(`^/dashboard/settings/online-user$`),
-		regexp.MustCompile(`^/dashboard/settings/waf$`),
-		regexp.MustCompile(`^/dashboard/settings/api-tokens$`),
-		regexp.MustCompile(`^/dashboard/settings/theme$`),
-		// 注意：这里的白名单决定哪些 URL 走 index.html fallback；漏一条就会把
-		// 直接刷新该页面变成 404（HTTP 状态码层面，body 仍是 index.html，所以
-		// 浏览器内 SPA 看起来正常，但 monitoring / 链接预览会以为站点挂了）。
-		// 新增前端路由时必须在 admin-frontend/src/main.tsx 与这里同步加。
+	if !fs.ValidPath(filePath) {
+		return false
 	}
-
-	getFallbackStatusCode := func(path string) int {
-		for _, reg := range frontendPageUrlRegistry {
-			if reg.MatchString(path) {
-				return http.StatusOK
-			}
-		}
-		return http.StatusNotFound
+	templateFS, err := fs.Sub(frontendFS, templateRoot)
+	if err != nil {
+		return false
 	}
-
-	return func(c *gin.Context) {
-		if strings.HasPrefix(c.Request.URL.Path, "/api") {
-			c.JSON(http.StatusNotFound, newErrorResponse(errors.New("404 Not Found")))
-			return
-		}
-
-		// redirect for /dashboard to /dashboard/
-		if c.Request.URL.Path == "/dashboard" {
-			c.Redirect(http.StatusMovedPermanently, "/dashboard/")
-			return
-		}
-
-		fallbackStatusCode := getFallbackStatusCode(c.Request.URL.Path)
-		// Only /dashboard/ belongs to the admin frontend; /dashboard.. must not be trimmed into ../.
-		if strings.HasPrefix(c.Request.URL.Path, "/dashboard/") {
-			stripPath := strings.TrimPrefix(c.Request.URL.Path, "/dashboard/")
-			if checkLocalFileOrFs(c, frontendDist, singleton.Conf.AdminTemplate, stripPath, http.StatusOK) {
-				return
-			}
-			if checkLocalFileOrFs(c, frontendDist, singleton.Conf.AdminTemplate, "index.html", fallbackStatusCode) {
-				return
-			}
-			// 兜底：当前管理端主题缺文件时回退内置 admin-dist，避免整站 404。
-			if singleton.Conf.AdminTemplate != "admin-dist" &&
-				checkLocalFileOrFs(c, frontendDist, "admin-dist", "index.html", fallbackStatusCode) {
-				return
-			}
-			c.JSON(http.StatusNotFound, newErrorResponse(errors.New("404 Not Found")))
-			return
-		}
-		stripPath := strings.TrimPrefix(c.Request.URL.Path, "/")
-		if checkLocalFileOrFs(c, frontendDist, singleton.Conf.UserTemplate, stripPath, http.StatusOK) {
-			return
-		}
-		if checkLocalFileOrFs(c, frontendDist, singleton.Conf.UserTemplate, "index.html", fallbackStatusCode) {
-			return
-		}
-		// 兜底：当前访客主题缺文件时回退内置 user-dist，避免整站 404。
-		if singleton.Conf.UserTemplate != "user-dist" &&
-			checkLocalFileOrFs(c, frontendDist, "user-dist", "index.html", fallbackStatusCode) {
-			return
-		}
-		c.JSON(http.StatusNotFound, newErrorResponse(errors.New("404 Not Found")))
+	file, err := templateFS.Open(filePath)
+	if err != nil {
+		return false
 	}
+	return serveFrontendFile(c, filePath, file, customStatusCode)
+}
+
+// tryDiskRoot 在受限目录 dirRoot 内查找并返回 filePath（os.Root 把路径限制在 root 内，防 URL 穿越）。
+func tryDiskRoot(c *gin.Context, dirRoot, filePath string, code int) bool {
+	root, err := os.OpenRoot(dirRoot)
+	if err != nil {
+		return false
+	}
+	defer root.Close()
+	file, err := root.Open(filePath)
+	if err != nil {
+		return false
+	}
+	return serveFrontendFile(c, filePath, file, code)
+}
+
+// serveFrontendFile 以 customStatusCode 输出普通文件（目录或不可 Seek 的文件返回 false），并关闭 file。
+func serveFrontendFile(c *gin.Context, name string, file fs.File, customStatusCode int) bool {
+	defer file.Close()
+	fileStat, err := file.Stat()
+	if err != nil || fileStat.IsDir() {
+		return false
+	}
+	readSeeker, ok := file.(io.ReadSeeker)
+	if !ok {
+		return false
+	}
+	setFrontendCacheHeader(c, name)
+	http.ServeContent(utils.NewGinCustomWriter(c, customStatusCode), c.Request, name, fileStat.ModTime(), readSeeker)
+	return true
 }

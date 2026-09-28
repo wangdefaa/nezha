@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
 	"github.com/nezhahq/nezha/model"
@@ -109,7 +109,7 @@ func TestForceUpdateServerOnlineForeignIDIndistinguishableFromUnknown(t *testing
 	defer reset()
 
 	const bobID = uint64(200)
-	foreignResp := decodeForceUpdate(t, runForceUpdate(t, bobID, []uint64{1}))     // alice's online
+	foreignResp := decodeForceUpdate(t, runForceUpdate(t, bobID, []uint64{1}))    // alice's online
 	unknownResp := decodeForceUpdate(t, runForceUpdate(t, bobID, []uint64{9999})) // does not exist
 
 	assert.Equal(t, foreignResp.Success, unknownResp.Success,

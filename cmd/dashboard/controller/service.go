@@ -3,7 +3,6 @@ package controller
 import (
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -76,13 +75,7 @@ func serviceResponseCacheKey(c *gin.Context) string {
 	if tok == nil {
 		return base + "::jwt"
 	}
-	ids := tok.ServerIDs()
-	slices.Sort(ids)
-	parts := make([]string, 0, len(ids))
-	for _, id := range ids {
-		parts = append(parts, strconv.FormatUint(id, 10))
-	}
-	return fmt.Sprintf("%s::pat:%d::servers:%s", base, tok.ID, strings.Join(parts, ","))
+	return fmt.Sprintf("%s::pat:%d::servers:%s", base, tok.ID, sortedServerIDsKey(tok))
 }
 
 func filterCycleTransferStatsForViewer(c *gin.Context, stats map[uint64]model.CycleTransferStats) map[uint64]model.CycleTransferStats {
@@ -150,8 +143,7 @@ func listService(c *gin.Context) ([]*model.Service, error) {
 // @Success 200 {object} model.CommonResponse[model.ServiceHistoryResponse]
 // @Router /service/{id}/history [get]
 func getServiceHistory(c *gin.Context) (*model.ServiceHistoryResponse, error) {
-	idStr := c.Param("id")
-	serviceID, err := strconv.ParseUint(idStr, 10, 64)
+	serviceID, err := paramID(c)
 	if err != nil {
 		return nil, err
 	}
@@ -281,8 +273,7 @@ func queryServiceHistoryFromDB(c *gin.Context, serviceID uint64, period tsdb.Que
 // @Success 200 {object} model.CommonResponse[[]model.ServiceInfos]
 // @Router /server/{id}/service [get]
 func listServerServices(c *gin.Context) ([]*model.ServiceInfos, error) {
-	idStr := c.Param("id")
-	serverID, err := strconv.ParseUint(idStr, 10, 64)
+	serverID, err := paramID(c)
 	if err != nil {
 		return nil, err
 	}
@@ -330,14 +321,8 @@ func listServerServices(c *gin.Context) ([]*model.ServiceInfos, error) {
 	}
 
 	for _, service := range services {
-		if service.Cover == model.ServiceCoverAll {
-			if service.SkipServers[serverID] {
-				continue
-			}
-		} else {
-			if !service.SkipServers[serverID] {
-				continue
-			}
+		if !service.CoversServer(serverID) {
+			continue
 		}
 
 		historyResult, ok := historyResults[service.ID]
@@ -384,14 +369,8 @@ func queryServerServicesFromDB(serverID uint64, serverName string, period tsdb.Q
 
 	var result []*model.ServiceInfos
 	for _, service := range services {
-		if service.Cover == model.ServiceCoverAll {
-			if service.SkipServers[serverID] {
-				continue
-			}
-		} else {
-			if !service.SkipServers[serverID] {
-				continue
-			}
+		if !service.CoversServer(serverID) {
+			continue
 		}
 
 		records, ok := grouped[service.ID]
@@ -437,19 +416,9 @@ func listServerWithServices(c *gin.Context) ([]uint64, error) {
 	serverIDSet := make(map[uint64]bool)
 
 	for _, service := range services {
-		if service.Cover == model.ServiceCoverAll {
-			// 除了跳过的服务器，其他都包含
-			for serverID := range serverMap {
-				if !service.SkipServers[serverID] {
-					serverIDSet[serverID] = true
-				}
-			}
-		} else {
-			// 只包含指定的服务器
-			for serverID, enabled := range service.SkipServers {
-				if enabled {
-					serverIDSet[serverID] = true
-				}
+		for serverID := range serverMap {
+			if service.CoversServer(serverID) {
+				serverIDSet[serverID] = true
 			}
 		}
 	}
@@ -484,15 +453,39 @@ func createService(c *gin.Context) (uint64, error) {
 	if err := c.ShouldBindJSON(&mf); err != nil {
 		return 0, err
 	}
-
-	if !isValidServiceCover(mf.Cover) {
-		return 0, singleton.Localizer.ErrorT("permission denied")
+	if err := validateServiceForm(&mf); err != nil {
+		return 0, err
 	}
 
-	uid := getUid(c)
-
 	var m model.Service
-	m.UserID = uid
+	m.UserID = getUid(c)
+	applyServiceForm(&m, &mf)
+	if err := validateServers(c, &m); err != nil {
+		return 0, err
+	}
+
+	if err := singleton.DB.Create(&m).Error; err != nil {
+		return 0, newGormError("%v", err)
+	}
+	if err := syncServiceSentinel(&m); err != nil {
+		return 0, err
+	}
+	return m.ID, nil
+}
+
+// validateServiceForm 校验监控类型与 cover 枚举（未知 cover 会绕过 PAT fan-out 收口，一律拒绝）。
+func validateServiceForm(mf *model.ServiceForm) error {
+	if err := model.ValidateServiceMonitorType(uint64(mf.Type)); err != nil {
+		return err
+	}
+	if !isValidServiceCover(mf.Cover) {
+		return singleton.Localizer.ErrorT("permission denied")
+	}
+	return nil
+}
+
+// applyServiceForm 把表单字段写入 m（不动 ID/UserID）。
+func applyServiceForm(m *model.Service, mf *model.ServiceForm) {
 	m.Name = mf.Name
 	m.Target = strings.TrimSpace(mf.Target)
 	m.Type = mf.Type
@@ -506,21 +499,15 @@ func createService(c *gin.Context) (uint64, error) {
 	m.MinLatency = mf.MinLatency
 	m.MaxLatency = mf.MaxLatency
 	m.HideForGuest = mf.HideForGuest
+}
 
-	if err := validateServers(c, &m); err != nil {
-		return 0, err
+// syncServiceSentinel 落库后刷新运行态监控与排序列表。
+func syncServiceSentinel(m *model.Service) error {
+	if err := singleton.ServiceSentinelShared.Update(m); err != nil {
+		return err
 	}
-
-	if err := singleton.DB.Create(&m).Error; err != nil {
-		return 0, newGormError("%v", err)
-	}
-
-	if err := singleton.ServiceSentinelShared.Update(&m); err != nil {
-		return 0, err
-	}
-
 	singleton.ServiceSentinelShared.UpdateServiceList()
-	return m.ID, nil
+	return nil
 }
 
 // Update service
@@ -536,8 +523,7 @@ func createService(c *gin.Context) (uint64, error) {
 // @Success 200 {object} model.CommonResponse[any]
 // @Router /service/{id} [patch]
 func updateService(c *gin.Context) (any, error) {
-	strID := c.Param("id")
-	id, err := strconv.ParseUint(strID, 10, 64)
+	id, err := paramID(c)
 	if err != nil {
 		return nil, err
 	}
@@ -545,9 +531,8 @@ func updateService(c *gin.Context) (any, error) {
 	if err := c.ShouldBindJSON(&mf); err != nil {
 		return nil, err
 	}
-
-	if !isValidServiceCover(mf.Cover) {
-		return nil, singleton.Localizer.ErrorT("permission denied")
+	if err := validateServiceForm(&mf); err != nil {
+		return nil, err
 	}
 
 	var m model.Service
@@ -559,33 +544,17 @@ func updateService(c *gin.Context) (any, error) {
 		return nil, singleton.Localizer.ErrorT("permission denied")
 	}
 
-	m.Name = mf.Name
-	m.Target = strings.TrimSpace(mf.Target)
-	m.Type = mf.Type
-	m.SkipServers = mf.SkipServers
-	m.Cover = mf.Cover
-	m.DisplayIndex = mf.DisplayIndex
-	m.Notify = mf.Notify
-	m.NotificationGroupID = mf.NotificationGroupID
-	m.Duration = mf.Duration
-	m.LatencyNotify = mf.LatencyNotify
-	m.MinLatency = mf.MinLatency
-	m.MaxLatency = mf.MaxLatency
-	m.HideForGuest = mf.HideForGuest
-
+	applyServiceForm(&m, &mf)
 	if err := validateServers(c, &m); err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	if err := singleton.DB.Save(&m).Error; err != nil {
 		return nil, newGormError("%v", err)
 	}
-
-	if err := singleton.ServiceSentinelShared.Update(&m); err != nil {
+	if err := syncServiceSentinel(&m); err != nil {
 		return nil, err
 	}
-
-	singleton.ServiceSentinelShared.UpdateServiceList()
 	return nil, nil
 }
 
@@ -610,9 +579,8 @@ func batchDeleteService(c *gin.Context) (any, error) {
 		return nil, singleton.Localizer.ErrorT("permission denied")
 	}
 
-	// 与 batchDeleteCron 对称：DispatchTask 没有 PAT 上下文，这里是阻止
-	// 受限 PAT 通过删除 ServiceCoverAll + 不充分 SkipServers 间接影响
-	// 白名单外 owner servers 探测状态的唯一同步入口。
+	// DispatchTask 没有 PAT 上下文，这里是阻止受限 PAT 通过删除 ServiceCoverAll +
+	// 不充分 SkipServers 间接影响白名单外 owner servers 探测状态的唯一同步入口。
 	for _, id := range ids {
 		existing, ok := singleton.ServiceSentinelShared.Get(id)
 		if !ok || existing == nil {

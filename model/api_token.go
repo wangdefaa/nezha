@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,9 +13,9 @@ import (
 
 // Scope 命名规范（唯一一套）：nezha:{resource}:{verb}
 //
-//   - resource: inventory / server / service / alertrule / cron /
+//   - resource: inventory / server / service / alertrule /
 //     notification / notification-group / admin
-//   - verb: read / write / delete / exec
+//   - verb: read / write / delete（exec 为已删命令执行/终端的遗留，无路由使用）
 //
 // `*` 通配在 resource 或 verb 位均可：
 //   - nezha:server:* 给定资源的所有动作
@@ -22,15 +23,14 @@ import (
 //
 // inventory 与 server 已拆开：inventory 管“能看到/能删哪些机器”——`GET /api/v1/server`、
 // `/server-group`、batch-delete server/group 都用 nezha:inventory:{read,delete}；
-// server 管对已知机器的运行态操作（exec、编辑配置、metrics）。
+// server 管对已知机器的运行态操作（编辑配置、force-update、metrics）。
 const (
 	ScopeNezhaAll = "nezha:*"
 
 	// inventory 资源域：管理后台对“服务器清单”本身的枚举与删除（列出 GET /server、
-	// 删除 batch-delete/server、server-group 的列出/删除，以及 MCP server.list）。
-	// 刻意与 nezha:server:* 分开：后者是对已知 server 的运行态操作（exec / 文件读写 /
-	// 编辑 / metrics），而 inventory 是“能看到/能删哪些机器”的台账权限。拆开后，
-	// 一张只跑命令的 PAT 不必同时具备遍历和删除整个清单的能力。
+	// 删除 batch-delete/server、server-group 的列出/删除）。
+	// 刻意与 nezha:server:* 分开：后者是对已知 server 的运行态操作（编辑 / force-update /
+	// metrics），而 inventory 是“能看到/能删哪些机器”的台账权限。
 	ScopeInventoryRead   = "nezha:inventory:read"
 	ScopeInventoryDelete = "nezha:inventory:delete"
 
@@ -134,19 +134,8 @@ func (t *APIToken) ServerIDs() []uint64 {
 	parts := strings.Split(t.ServersCSV, ",")
 	out := make([]uint64, 0, len(parts))
 	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		var id uint64
-		for _, c := range p {
-			if c < '0' || c > '9' {
-				id = 0
-				break
-			}
-			id = id*10 + uint64(c-'0')
-		}
-		if id != 0 {
+		// 非法片段（含非数字、溢出）与 0 一律跳过。
+		if id, err := strconv.ParseUint(strings.TrimSpace(p), 10, 64); err == nil && id != 0 {
 			out = append(out, id)
 		}
 	}
@@ -157,7 +146,7 @@ func (t *APIToken) ServerIDs() []uint64 {
 func (t *APIToken) SetServerIDs(ids []uint64) {
 	parts := make([]string, 0, len(ids))
 	for _, id := range ids {
-		parts = append(parts, formatUint(id))
+		parts = append(parts, strconv.FormatUint(id, 10))
 	}
 	t.ServersCSV = strings.Join(parts, ",")
 }
@@ -166,7 +155,7 @@ func (t *APIToken) SetServerIDs(ids []uint64) {
 //
 // 匹配规则：
 //   - nezha:* 覆盖整个 nezha 命名空间
-//   - 资源级通配：nezha:server:* 匹配所有 nezha:server:read/write/delete/exec
+//   - 资源级通配：nezha:server:* 匹配所有 nezha:server:<verb>
 //   - 精确匹配
 func (t *APIToken) HasScope(scope string) bool {
 	for _, s := range t.Scopes() {
@@ -213,21 +202,6 @@ func (t *APIToken) BeforeCreate(tx *gorm.DB) error {
 		return gorm.ErrInvalidData
 	}
 	return nil
-}
-
-// formatUint —— 小工具，避免引入 strconv。
-func formatUint(v uint64) string {
-	if v == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	return string(buf[i:])
 }
 
 // APITokenCreateRequest 是创建 PAT 接口的入参。

@@ -3,11 +3,9 @@ package controller
 import (
 	"errors"
 	"slices"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/copier"
-	"gorm.io/gorm"
 
 	"github.com/nezhahq/nezha/model"
 	"github.com/nezhahq/nezha/pkg/tsdb"
@@ -49,8 +47,7 @@ func listServer(c *gin.Context) ([]*model.Server, error) {
 // @Success 200 {object} model.CommonResponse[any]
 // @Router /server/{id} [patch]
 func updateServer(c *gin.Context) (any, error) {
-	idStr := c.Param("id")
-	id, err := strconv.ParseUint(idStr, 10, 64)
+	id, err := paramID(c)
 	if err != nil {
 		return nil, err
 	}
@@ -106,34 +103,9 @@ func batchDeleteServer(c *gin.Context) (any, error) {
 		return nil, singleton.Localizer.ErrorT("permission denied")
 	}
 
-	err := singleton.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Unscoped().Delete(&model.Server{}, "id in (?)", servers).Error; err != nil {
-			return err
-		}
-		if err := tx.Unscoped().Delete(&model.ServerGroupServer{}, "server_id in (?)", servers).Error; err != nil {
-			return err
-		}
-		return nil
-	})
-
-	if err != nil {
+	if err := singleton.DeleteServers(servers); err != nil {
 		return nil, newGormError("%v", err)
 	}
-
-	singleton.AlertsLock.Lock()
-	for _, sid := range servers {
-		for _, alert := range singleton.Alerts {
-			if singleton.AlertsCycleTransferStatsStore[alert.ID] != nil {
-				delete(singleton.AlertsCycleTransferStatsStore[alert.ID].ServerName, sid)
-				delete(singleton.AlertsCycleTransferStatsStore[alert.ID].Transfer, sid)
-				delete(singleton.AlertsCycleTransferStatsStore[alert.ID].NextUpdate, sid)
-			}
-		}
-	}
-	singleton.DB.Unscoped().Delete(&model.Transfer{}, "server_id in (?)", servers)
-	singleton.AlertsLock.Unlock()
-
-	singleton.ServerShared.Delete(servers)
 	return nil, nil
 }
 
@@ -218,8 +190,7 @@ var serverMetricMap = map[string]tsdb.MetricType{
 // @Success 200 {object} model.CommonResponse[model.ServerMetricsResponse]
 // @Router /server/{id}/metrics [get]
 func getServerMetrics(c *gin.Context) (*model.ServerMetricsResponse, error) {
-	idStr := c.Param("id")
-	serverID, err := strconv.ParseUint(idStr, 10, 64)
+	serverID, err := paramID(c)
 	if err != nil {
 		return nil, err
 	}

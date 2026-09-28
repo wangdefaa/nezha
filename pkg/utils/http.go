@@ -11,14 +11,6 @@ import (
 	"time"
 )
 
-// HttpClient / HttpClientSkipTlsVerify must not be used to dispatch
-// requests to user-controlled URLs (SSRF risk, GHSA-6x26-5727-rrm9).
-// For any attacker-controlled URL use NewRestrictedHTTPClient instead.
-var (
-	HttpClientSkipTlsVerify *http.Client
-	HttpClient              *http.Client
-)
-
 var ErrHTTPURLTargetNotAllowed = errors.New("HTTP URL target is not allowed")
 
 var blockedHTTPClientCIDRs = mustParseHTTPClientCIDRs([]string{
@@ -40,51 +32,24 @@ var blockedHTTPClientCIDRs = mustParseHTTPClientCIDRs([]string{
 	"::1/128",
 	"::ffff:0:0/96",
 	"64:ff9b::/96",
+	"64:ff9b:1::/48",
 	"100::/64",
 	"2001::/23",
 	"2001:db8::/32",
+	"2002::/16",
 	"fc00::/7",
 	"fe80::/10",
 	"ff00::/8",
 })
 
+// init 给 http.DefaultClient 设超时：golang.org/x/oauth2 在 ctx 未注入 client 时
+// 回落到 DefaultClient（OAuth2 Exchange / UserInfo 请求），无超时会无限挂起。
 func init() {
-	HttpClientSkipTlsVerify = httpClient(_httpClient{
-		Transport: httpTransport(_httpTransport{
-			SkipVerifyTLS: true,
-		}),
-	})
-	HttpClient = httpClient(_httpClient{
-		Transport: httpTransport(_httpTransport{
-			SkipVerifyTLS: false,
-		}),
-	})
-
 	http.DefaultClient.Timeout = time.Minute * 10
 }
 
-type _httpTransport struct {
-	SkipVerifyTLS bool
-}
-
-func httpTransport(conf _httpTransport) *http.Transport {
-	return &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: conf.SkipVerifyTLS},
-		Proxy:           http.ProxyFromEnvironment,
-	}
-}
-
-type _httpClient struct {
-	Transport *http.Transport
-}
-
-func httpClient(conf _httpClient) *http.Client {
-	return &http.Client{
-		Transport: conf.Transport,
-		Timeout:   time.Minute * 10,
-	}
-}
-
+// NewRestrictedHTTPClient 为用户可控 URL（通知 webhook、主题下载等）构造出站 client：
+// 先校验目标不在内网/保留网段（SSRF，GHSA-6x26-5727-rrm9），再把连接钉到已校验 IP。
 func NewRestrictedHTTPClient(rawURL string, skipVerifyTLS bool) (*http.Client, error) {
 	parsedURL, ip, err := ResolveAllowedHTTPURL(rawURL)
 	if err != nil {

@@ -24,6 +24,13 @@ type APITokenAccessor interface {
 	CanAccessServer(uint64) bool
 }
 
+// PATFromContext 取请求上下文里的 PAT 访问器；JWT/匿名请求返回 nil。
+func PATFromContext(ctx *gin.Context) APITokenAccessor {
+	v, _ := ctx.Get(CtxKeyAPIToken)
+	tok, _ := v.(APITokenAccessor)
+	return tok
+}
+
 const (
 	CacheKeyOauth2State = "cko2s::"
 )
@@ -43,19 +50,15 @@ func (c *Common) GetID() uint64 {
 	return c.ID
 }
 
-// GetUserID 原子读取所属用户 ID。Server.UserID 会在 ServerTransfer 的
-// Register/revertTransition 流程里被实时改写以反映新所有者，同时 auth
-// 热路径在每次 agent RPC 都会读它。任何并发读必须走 atomic，否则与 SetUserID
-// 一起会被 go race detector 识别为 data race（见
-// TestServerUserIDConcurrentAccessIsRaceFree）。
+// GetUserID 原子读取所属用户 ID。改写 UserID 的服务器转移功能已移除，生产路径
+// 目前没有并发写；保留 atomic 读写协议是为了让 SetUserID（仅测试使用）与
+// 热路径读取不构成 data race（见 TestServerUserIDConcurrentAccessIsRaceFree）。
 func (c *Common) GetUserID() uint64 {
 	return atomic.LoadUint64(&c.UserID)
 }
 
-// SetUserID 原子改写所属用户 ID。仅在「server 已经在 in-memory cache 里」
-// 的写入路径（ServerTransfer.Register / revertTransition）需要用 atomic
-// 保证可见性；普通 GORM AfterFind / Create 因为没有并发读所以可以直接赋
-// 值。配合 GetUserID 形成 atomic-only 的并发访问协议。
+// SetUserID 原子改写所属用户 ID（生产代码已无调用方，保留给并发测试）。
+// 普通 GORM AfterFind / Create 没有并发读，可以直接赋值。
 func (c *Common) SetUserID(uid uint64) {
 	atomic.StoreUint64(&c.UserID, uid)
 }
@@ -71,13 +74,8 @@ func (c *Common) HasPermission(ctx *gin.Context) bool {
 		return true
 	}
 
-	// 必须走 GetUserID 而不是裸读 c.UserID — Server.UserID 在
-	// ServerTransfer.Register / revertTransition 里会被 atomic.StoreUint64
-	// 改写，dashboard 各 controller 在 listHandler post-filter 这条热路径上
-	// 高频对同一 *Server 调 HasPermission。裸读会与 SetUserID 形成 data
-	// race（TestCommonHasPermissionConcurrentWithSetUserIDIsRaceFree 在
-	// -race 下钉死该不变量），并且在 transfer 切换瞬间可能给出错误的权限
-	// 判断。
+	// 走 GetUserID 而不是裸读 c.UserID，与 SetUserID 的 atomic 协议保持一致
+	// （TestCommonHasPermissionConcurrentWithSetUserIDIsRaceFree 在 -race 下钉死该不变量）。
 	return user.ID == c.GetUserID()
 }
 

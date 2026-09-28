@@ -23,11 +23,10 @@ var (
 	})
 )
 
+// IPInfo 只解出 Lookup 实际用到的国家/大洲代码。
 type IPInfo struct {
-	Country       string `maxminddb:"country"`
-	CountryName   string `maxminddb:"country_name"`
-	Continent     string `maxminddb:"continent"`
-	ContinentName string `maxminddb:"continent_name"`
+	Country   string `maxminddb:"country"`
+	Continent string `maxminddb:"continent"`
 }
 
 func Lookup(ip net.IP) (string, error) {

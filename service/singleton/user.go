@@ -70,6 +70,23 @@ func lookupServerOwner(uid uint64) (model.ServerOwnerInfo, bool) {
 	return model.ServerOwnerInfo{ID: uid, Username: info.Username}, true
 }
 
+// userIsAdmin 供拨测等业务复用（servicesentinel.go / server.go）。
+// 0 号用户是历史 global-secret 伪 owner：initUser 以 RoleAdmin 把它放进 UserInfoMap，
+// 这里的显式判断让 initUser 之前的调用也按 admin 处理。
+func userIsAdmin(userID uint64) bool {
+	return userID == 0 || UserRole(userID).IsAdmin()
+}
+
+// UserRole 返回内存中的用户角色，查不到按普通成员处理（0 号见 initUser 的兼容条目）。
+func UserRole(userID uint64) model.Role {
+	UserLock.RLock()
+	defer UserLock.RUnlock()
+	if u, ok := UserInfoMap[userID]; ok {
+		return u.Role
+	}
+	return model.RoleMember
+}
+
 func OnUserUpdate(u *model.User) {
 	UserLock.Lock()
 	defer UserLock.Unlock()
@@ -87,64 +104,67 @@ func OnUserUpdate(u *model.User) {
 }
 
 func OnUserDelete(id []uint64, errorFunc func(string, ...any) error) error {
-	UserLock.Lock()
-	defer UserLock.Unlock()
-
 	if len(id) < 1 {
 		return Localizer.ErrorT("user id not specified")
 	}
+	deleted, changes, err := deleteUsersLocked(id, errorFunc)
+	// 必须在释放 UserLock 之后再清内存：ServerShared.Delete 取 lifecycleMu 写锁，
+	// 而拨测上报在 lifecycleMu 读锁内会经 userIsAdmin 取 UserLock 读锁，持 UserLock 调用会死锁；
+	// 换上改写过引用的规则与拨测时要取的 AlertsLock、拨测锁同理。
+	if len(deleted) > 0 {
+		afterServersDeleted(deleted, changes)
+	}
+	return err
+}
 
-	var (
-		server  bool
-		servers []uint64
-	)
+// deleteUsersLocked 在 UserLock 内逐个删除用户及其 server 并清理凭据映射，
+// 返回已从库中删除的 server id，以及改写过引用的规则与拨测。
+func deleteUsersLocked(id []uint64, errorFunc func(string, ...any) error) ([]uint64, refChanges, error) {
+	UserLock.Lock()
+	defer UserLock.Unlock()
 
+	var deleted []uint64
+	var changes refChanges
 	slist := ServerShared.GetSortedList()
 	for _, uid := range id {
-		err := DB.Transaction(func(tx *gorm.DB) error {
-			servers = model.FindByUserID(slist, uid)
-			server = len(servers) > 0
-			if server {
-				if err := tx.Unscoped().Delete(&model.Server{}, "id in (?)", servers).Error; err != nil {
-					return err
-				}
-				if err := tx.Unscoped().Delete(&model.ServerGroupServer{}, "server_id in (?)", servers).Error; err != nil {
-					return err
-				}
-			}
-
-			if err := tx.Unscoped().Delete(&model.Transfer{}, "server_id in (?)", servers).Error; err != nil {
-				return err
-			}
-
-			if err := tx.Where("id = ?", uid).Delete(&model.User{}).Error; err != nil {
-				return err
-			}
-			return nil
-		})
-
+		servers := model.FindByUserID(slist, uid)
+		c, err := deleteUserTx(uid, servers)
 		if err != nil {
-			return errorFunc("%v", err)
+			return deleted, changes, errorFunc("%v", err)
 		}
-
-		if server {
-			AlertsLock.Lock()
-			for _, sid := range servers {
-				for _, alert := range Alerts {
-					if AlertsCycleTransferStatsStore[alert.ID] != nil {
-						delete(AlertsCycleTransferStatsStore[alert.ID].ServerName, sid)
-						delete(AlertsCycleTransferStatsStore[alert.ID].Transfer, sid)
-						delete(AlertsCycleTransferStatsStore[alert.ID].NextUpdate, sid)
-					}
-				}
-			}
-			AlertsLock.Unlock()
-			ServerShared.Delete(servers)
-		}
-
+		deleted = append(deleted, servers...)
+		changes.add(c)
 		secret := UserInfoMap[uid].AgentSecret
 		delete(AgentSecretToUserId, secret)
 		delete(UserInfoMap, uid)
 	}
-	return nil
+	return deleted, changes, nil
+}
+
+// deleteUserTx 在一个事务里删除用户和属于该用户的 server。
+func deleteUserTx(uid uint64, servers []uint64) (refChanges, error) {
+	var changes refChanges
+	err := DB.Transaction(func(tx *gorm.DB) (err error) {
+		if len(servers) > 0 {
+			if changes, err = deleteServersTx(tx, servers); err != nil {
+				return err
+			}
+		}
+		return tx.Where("id = ?", uid).Delete(&model.User{}).Error
+	})
+	return changes, err
+}
+
+func dropAlertTransferStats(servers []uint64) {
+	AlertsLock.Lock()
+	defer AlertsLock.Unlock()
+	for _, sid := range servers {
+		for _, alert := range Alerts {
+			if AlertsCycleTransferStatsStore[alert.ID] != nil {
+				delete(AlertsCycleTransferStatsStore[alert.ID].ServerName, sid)
+				delete(AlertsCycleTransferStatsStore[alert.ID].Transfer, sid)
+				delete(AlertsCycleTransferStatsStore[alert.ID].NextUpdate, sid)
+			}
+		}
+	}
 }
